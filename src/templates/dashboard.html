@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Usuario {{ user_id }}</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: Arial, sans-serif;
+            background: #ecf0f1;
+            padding: 20px;
+        }
+        .header {
+            background: #2c3e50;
+            color: white;
+            padding: 20px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .header h1 {
+            font-size: 24px;
+        }
+        .header .info {
+            font-size: 14px;
+            opacity: 0.8;
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .panel.full {
+            grid-column: 1 / -1;
+        }
+        .panel h2 {
+            margin-bottom: 15px;
+            color: #2c3e50;
+            font-size: 18px;
+        }
+        #chartCanvas {
+            max-height: 300px;
+        }
+        .notificaciones {
+            max-height: 300px;
+            overflow-y: auto;
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+        }
+        .notificacion {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-left: 4px solid #3498db;
+            background: white;
+            border-radius: 3px;
+        }
+        .notificacion.WARNING {
+            border-left-color: #f39c12;
+        }
+        .notificacion.ERROR {
+            border-left-color: #e74c3c;
+        }
+        .notificacion.CRITICAL {
+            border-left-color: #c0392b;
+        }
+        .notificacion .timestamp {
+            font-size: 12px;
+            color: #7f8c8d;
+        }
+        .notificacion .tipo {
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 3px;
+            font-size: 12px;
+            font-weight: bold;
+            margin-right: 10px;
+        }
+        .notificacion.INFO .tipo {
+            background: #3498db;
+            color: white;
+        }
+        .notificacion.WARNING .tipo {
+            background: #f39c12;
+            color: white;
+        }
+        .notificacion.ERROR .tipo {
+            background: #e74c3c;
+            color: white;
+        }
+        .notificacion.CRITICAL .tipo {
+            background: #c0392b;
+            color: white;
+        }
+        .form-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+            color: #555;
+        }
+        input[type="text"], select {
+            width: 100%;
+            padding: 10px;
+            border: 2px solid #ddd;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #3498db;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            transition: background 0.3s;
+        }
+        button:hover {
+            background: #2980b9;
+        }
+        button.danger {
+            background: #e74c3c;
+        }
+        button.danger:hover {
+            background: #c0392b;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🔷 Dashboard - Usuario: {{ user_id }}</h1>
+        <div class="info">Conectado: <span id="timeConnected"></span></div>
+    </div>
+
+    <div class="container">
+        <div class="panel full">
+            <h2>📊 Gráfica en Tiempo Real</h2>
+            <canvas id="chartCanvas"></canvas>
+            <button onclick="actualizarGrafica()" style="margin-top: 15px;">🔄 Actualizar Datos</button>
+        </div>
+
+        <div class="panel">
+            <h2>🔔 Notificaciones de Errores</h2>
+            <div id="notificaciones" class="notificaciones"></div>
+        </div>
+
+        <div class="panel">
+            <h2>📤 Enviar Error</h2>
+            <form id="errorForm">
+                <div class="form-group">
+                    <label for="descripcion">Descripción del error:</label>
+                    <input type="text" id="descripcion" name="descripcion" placeholder="Describe el error..." required>
+                </div>
+                <div class="form-group">
+                    <label for="severidad">Severidad:</label>
+                    <select id="severidad" name="severidad">
+                        <option value="INFO">INFO</option>
+                        <option value="WARNING">WARNING</option>
+                        <option value="ERROR" selected>ERROR</option>
+                        <option value="CRITICAL">CRITICAL</option>
+                    </select>
+                </div>
+                <button type="submit" class="danger">✉️ Enviar Error</button>
+            </form>
+        </div>
+    </div>
+
+    <script>
+        const userId = "{{ user_id }}";
+        const socket = io();
+
+        // Conectar a la sala del usuario
+        socket.on('connect', () => {
+            socket.emit('join', { user_id: userId });
+        });
+
+        // Mostrar hora de conexión
+        document.getElementById('timeConnected').textContent = new Date().toLocaleTimeString();
+
+        // Configurar gráfica
+        const ctx = document.getElementById('chartCanvas').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [{
+                    label: 'Datos en Tiempo Real',
+                    data: [],
+                    borderColor: '#3498db',
+                    backgroundColor: 'rgba(52, 152, 219, 0.1)',
+                    tension: 0.4
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    y: {
+                        beginAtZero: true
+                    }
+                }
+            }
+        });
+
+        // Cargar datos iniciales
+        cargarDatosGrafica();
+        cargarNotificaciones();
+
+        async function cargarDatosGrafica() {
+            try {
+                const response = await fetch(`/api/datos_grafica/${userId}`);
+                const data = await response.json();
+                chart.data.labels = data.x;
+                chart.data.datasets[0].data = data.y;
+                chart.update();
+            } catch (error) {
+                console.error('Error al cargar datos:', error);
+            }
+        }
+
+        async function actualizarGrafica() {
+            try {
+                const response = await fetch(`/api/actualizar_grafica/${userId}`, {
+                    method: 'POST'
+                });
+                const result = await response.json();
+                if (result.success) {
+                    chart.data.labels = result.datos.x;
+                    chart.data.datasets[0].data = result.datos.y;
+                    chart.update();
+                }
+            } catch (error) {
+                console.error('Error al actualizar gráfica:', error);
+            }
+        }
+
+        async function cargarNotificaciones() {
+            try {
+                const response = await fetch(`/api/notificaciones/${userId}`);
+                const notificaciones = await response.json();
+                const container = document.getElementById('notificaciones');
+                container.innerHTML = '';
+                notificaciones.forEach(notif => agregarNotificacion(notif));
+            } catch (error) {
+                console.error('Error al cargar notificaciones:', error);
+            }
+        }
+
+        function agregarNotificacion(notif) {
+            const container = document.getElementById('notificaciones');
+            const div = document.createElement('div');
+            div.className = `notificacion ${notif.tipo}`;
+            div.innerHTML = `
+                <div class="timestamp">${notif.timestamp}</div>
+                <span class="tipo">${notif.tipo}</span>
+                <span>${notif.mensaje}</span>
+            `;
+            container.insertBefore(div, container.firstChild);
+        }
+
+        // Escuchar actualizaciones en tiempo real
+        socket.on('nueva_notificacion', (notif) => {
+            agregarNotificacion(notif);
+        });
+
+        socket.on('actualizar_grafica', (datos) => {
+            chart.data.labels = datos.x;
+            chart.data.datasets[0].data = datos.y;
+            chart.update();
+        });
+
+        // Manejar envío de errores
+        document.getElementById('errorForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const descripcion = document.getElementById('descripcion').value;
+            const severidad = document.getElementById('severidad').value;
+
+            try {
+                const response = await fetch(`/api/enviar_error/${userId}`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({ descripcion, severidad })
+                });
+
+                const result = await response.json();
+                if (result.success) {
+                    document.getElementById('descripcion').value = '';
+                }
+            } catch (error) {
+                console.error('Error al enviar:', error);
+            }
+        });
+    </script>
+</body>
+</html>

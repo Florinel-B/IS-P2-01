@@ -1,5 +1,9 @@
 import pandas as pd
 import numpy as np
+import pickle
+import os
+import torch
+
 
 
 def cargar_y_agrupar_dataset(ruta_csv: str):
@@ -42,10 +46,21 @@ def cargar_y_agrupar_dataset(ruta_csv: str):
 
 
 
-
 if __name__ == "__main__":
+    archivo_pickle = "datos_procesados.pkl"
 
-    datos = cargar_y_agrupar_dataset("Dataset-CV.csv")
+    if os.path.exists(archivo_pickle):
+        print(f"Cargando datos desde {archivo_pickle}...")
+        with open(archivo_pickle, "rb") as f:
+            datos = pickle.load(f)
+    else:
+        print("Procesando CSV original...")
+        datos = cargar_y_agrupar_dataset("Dataset-CV.csv")
+        
+        print(f"Guardando datos en {archivo_pickle}...")
+        with open(archivo_pickle, "wb") as f:
+            pickle.dump(datos, f)
 
     print(datos[0])
+
 

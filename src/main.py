@@ -1,5 +1,12 @@
-import pandas as pd
 import numpy as np
+import pickle
+import os
+import torch
+from data_processing import cargar_y_agrupar_dataset
+from incidence_detector import detectar_incidencias, entrenar_modelo
+from visualization import plot_incidencias
+import pandas as pd
+
 
 
 def cargar_y_agrupar_dataset(ruta_csv: str):
@@ -42,10 +49,42 @@ def cargar_y_agrupar_dataset(ruta_csv: str):
 
 
 
-
 if __name__ == "__main__":
 
-    datos = cargar_y_agrupar_dataset("Dataset-CV.csv")
+    df = cargar_y_agrupar_dataset("Dataset-CV.csv")
+    df = pd.DataFrame(df)
+
+    df = detectar_incidencias(df)
+
+    print("Ejemplo de datos detectados:")
+    print(df.head())
+
+    modelo, acc = entrenar_modelo(df)
+    print(f"\n▶ Precisión del modelo predictivo: {acc:.2f}")
+
+    # Guardar incidencias detectadas
+    df.to_csv("incidencias_detectadas.csv", index=False)
+    print("\n📁 Archivo generado: incidencias_detectadas.csv")
+
+    # Mostrar gráfica
+    plot_incidencias(df)
+
+
+
+    archivo_pickle = "datos_procesados.pkl"
+
+    if os.path.exists(archivo_pickle):
+        print(f"Cargando datos desde {archivo_pickle}...")
+        with open(archivo_pickle, "rb") as f:
+            datos = pickle.load(f)
+    else:
+        print("Procesando CSV original...")
+        datos = cargar_y_agrupar_dataset("Dataset-CV.csv")
+        
+        print(f"Guardando datos en {archivo_pickle}...")
+        with open(archivo_pickle, "wb") as f:
+            pickle.dump(datos, f)
 
     print(datos[0])
+
 

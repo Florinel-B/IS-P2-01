@@ -1,1 +1,1 @@
-Flask, numpy, pandas, 
+Flask, numpy, pandas, torch, sklearn, matplotlib

@@ -18,7 +18,10 @@ def cargar_y_agrupar_dataset(ruta_csv: str):
                 sub = g[(g['medida'] == medida) & (g['canal'] == canal)]
             else:
                 sub = g[g['medida'] == medida]
-            return float(sub['valor'].iloc[0]) if len(sub) else np.nan
+
+            # Usar media en vez del primer valor
+            return float(sub['valor'].astype(float).mean()) if len(sub) else np.nan
+
 
         datos.append({
             "tiempo": t,

@@ -14,8 +14,10 @@ def detectar_incidencias(df):
 
     # (ii) Saltos >= 0.5 voltios
     for col in ["R1_a", "R2_a", "R1_b", "R2_b"]:
+        std_dev = df[col].std()
         diff = df.groupby('id')[col].diff().abs()
-        df.loc[diff >= 500, 'incidencia'] = 2
+        df.loc[diff >= 3*std_dev, 'incidencia'] = 2
+
 
     df = df.drop(columns=["tiempo_shift"])
     return df

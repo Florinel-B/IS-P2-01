@@ -6,6 +6,8 @@ import numpy as np
 import pandas as pd
 import pickle
 import os
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix, classification_report
+from sklearn.preprocessing import StandardScaler
 
 # --- 1. Análisis de Datos y Correlaciones ---
 def analizar_datos(df: pd.DataFrame):
@@ -131,40 +133,61 @@ def analizar_datos(df: pd.DataFrame):
 # --- 2. Datasets (Adaptados para DataFrame) ---
 
 class VoltageDropDataset(Dataset):
-    def __init__(self, df, seq_len=10):
+    def __init__(self, df, seq_len=10, scaler=None, fit_scaler=False):
         """
         Dataset para predecir caídas de voltaje.
         Input: Ventana de 'seq_len' minutos de [status, R1, R2]
         Target: 1 si en el siguiente minuto hay un salto > 500mV, 0 si no.
         """
-        # Preprocesamiento: Normalizar y limpiar
         self.df = df.copy().ffill().fillna(0)
         
-        # Features: status, R1_a, R2_a (simplificado para el ejemplo)
-        # Nota: Un profesional debería normalizar estos valores (ej. MinMaxScaler)
-        self.features = self.df[['status', 'R1_a', 'R2_a']].values.astype(np.float32)
+        # Features: status, R1_a, R2_a
+        raw_features = self.df[['status', 'R1_a', 'R2_a']].values.astype(np.float32)
         
-        # Calcular etiquetas (Targets)
-        # Shift(-1) para ver el futuro inmediato
+        # === NORMALIZACIÓN ===
+        if fit_scaler:
+            self.scaler = StandardScaler()
+            self.features = self.scaler.fit_transform(raw_features).astype(np.float32)
+        elif scaler is not None:
+            self.scaler = scaler
+            self.features = self.scaler.transform(raw_features).astype(np.float32)
+        else:
+            self.scaler = None
+            self.features = raw_features
+        
+        # Calcular etiquetas con umbral más bajo para capturar más anomalías
         diffs = self.df[['R1_a', 'R2_a']].diff().shift(-1).abs()
-        # Si el salto en R1 o R2 es > 500, es una anomalía (Clase 1)
-        self.labels = ((diffs['R1_a'] > 500) | (diffs['R2_a'] > 500)).astype(int).values
+        # Umbral ajustable - 300mV puede ser más sensible
+        self.labels = ((diffs['R1_a'] > 300) | (diffs['R2_a'] > 300)).astype(int).values
         
         self.seq_len = seq_len
+        
+        # Contar anomalías para información
+        self.num_anomalies = self.labels.sum()
+        self.anomaly_ratio = self.num_anomalies / len(self.labels)
 
     def __len__(self):
         return len(self.features) - self.seq_len
 
     def __getitem__(self, idx):
-        # Ventana de tiempo t-seq_len hasta t
         x = self.features[idx : idx + self.seq_len]
-        # Etiqueta en t (predicción para t+1 basada en diff shift)
         y = self.labels[idx + self.seq_len - 1] 
-        return torch.tensor(x), torch.tensor([y], dtype=torch.float32)  # [y] para mantener dimensión
+        return torch.tensor(x), torch.tensor([y], dtype=torch.float32)
+    
+    def get_class_weights(self):
+        """Calcula pesos para balancear clases."""
+        n_samples = len(self.labels)
+        n_pos = self.labels.sum()
+        n_neg = n_samples - n_pos
+        
+        if n_pos == 0:
+            return 1.0
+        
+        # Peso inversamente proporcional a la frecuencia
+        weight_pos = n_samples / (2.0 * n_pos)
+        return weight_pos
 
-# ... (BlockageDataset se mantendría similar, adaptado a DataFrame) ...
-
-# --- 3. Data Augmentation ---
+# --- 3. Data Augmentation Mejorado ---
 def aumentar_datos_con_ruido(dataset, factor=5):
     """
     Genera datos sintéticos solo para la clase minoritaria (anomalías).
@@ -173,57 +196,221 @@ def aumentar_datos_con_ruido(dataset, factor=5):
     labels_list = []
     
     print("\n--- Iniciando Data Augmentation ---")
-    # Extraemos todos los datos originales
+    anomaly_count = 0
+    normal_count = 0
+    
     for i in range(len(dataset)):
         x, y = dataset[i]
         features_list.append(x)
         labels_list.append(y)
         
-        # Si es una anomalía (y == 1), generamos copias con ruido
         if y == 1.0:
+            anomaly_count += 1
             for _ in range(factor):
-                noise = torch.randn_like(x) * 0.05  # Ruido gaussiano suave
+                # Ruido más variado
+                noise = torch.randn_like(x) * 0.1
                 features_list.append(x + noise)
-                labels_list.append(y) # La etiqueta sigue siendo 1
+                labels_list.append(y)
+                
+                # También añadir versión escalada
+                scale = 0.95 + torch.rand(1).item() * 0.1
+                features_list.append(x * scale)
+                labels_list.append(y)
+        else:
+            normal_count += 1
     
-    print(f"Datos originales: {len(dataset)}")
+    print(f"Anomalías originales: {anomaly_count}")
+    print(f"Normales originales: {normal_count}")
     print(f"Datos tras aumentación: {len(features_list)}")
     
-    # Reempaquetar en un TensorDataset simple para el DataLoader
     x_tensor = torch.stack(features_list)
     y_tensor = torch.stack(labels_list)
     return torch.utils.data.TensorDataset(x_tensor, y_tensor)
 
-# --- 4. Modelos (Sin cambios mayores) ---
+# --- 4. Modelo Mejorado ---
 class VoltageAnomalyModel(nn.Module):
-    def __init__(self, input_size=3, hidden_size=32):
+    def __init__(self, input_size=3, hidden_size=64, num_layers=2, dropout=0.3):
         super(VoltageAnomalyModel, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 1)
+        self.lstm = nn.LSTM(
+            input_size, 
+            hidden_size, 
+            num_layers=num_layers,
+            batch_first=True,
+            dropout=dropout if num_layers > 1 else 0
+        )
+        self.bn = nn.BatchNorm1d(hidden_size)
+        self.fc1 = nn.Linear(hidden_size, 32)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.fc2 = nn.Linear(32, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         _, (h_n, _) = self.lstm(x)
-        out = self.fc(h_n[-1])
+        out = h_n[-1]
+        out = self.bn(out)
+        out = self.fc1(out)
+        out = self.relu(out)
+        out = self.dropout(out)
+        out = self.fc2(out)
         return self.sigmoid(out)
-
-# --- 5. Loop de Entrenamiento ---
-def train_template(train_loader, model, epochs=5):
-    criterion = nn.BCELoss()
-    optimizer = optim.Adam(model.parameters(), lr=0.001)
     
+    def predict(self, x):
+        return self.forward(x)
+
+# --- 5. Loop de Entrenamiento Mejorado ---
+def train_template(train_loader, model, epochs=20, pos_weight=1.0):
+    """Entrenamiento con pérdida ponderada para desbalance."""
+    # BCEWithLogitsLoss con pos_weight para manejar desbalance
+    # Nota: Requiere quitar sigmoid del modelo para logits
+    criterion = nn.BCELoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, patience=3, factor=0.5)
+    
+    # Crear pesos para muestras
     model.train()
+    best_loss = float('inf')
+    
     for epoch in range(epochs):
         total_loss = 0
         for X_batch, y_batch in train_loader:
             optimizer.zero_grad()
             y_pred = model(X_batch)
-            loss = criterion(y_pred, y_batch)
+            
+            # Pérdida ponderada manual
+            weight = torch.where(y_batch == 1, pos_weight, 1.0)
+            loss = nn.functional.binary_cross_entropy(y_pred, y_batch, weight=weight)
+            
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
         
-        print(f"Epoch {epoch+1}/{epochs} - Loss: {total_loss/len(train_loader):.4f}")
+        avg_loss = total_loss/len(train_loader)
+        scheduler.step(avg_loss)
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+        
+        if (epoch + 1) % 5 == 0:
+            print(f"Epoch {epoch+1}/{epochs} - Loss: {avg_loss:.4f} - LR: {optimizer.param_groups[0]['lr']:.6f}")
+
+# --- 6. Búsqueda de Umbral Óptimo ---
+def encontrar_umbral_optimo(model, val_loader):
+    """Encuentra el umbral que maximiza F1-score."""
+    model.eval()
+    all_probs = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            probs = model.predict(X_batch)
+            all_probs.extend(probs.cpu().numpy().flatten())
+            all_labels.extend(y_batch.cpu().numpy().flatten())
+    
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+    
+    # Probar diferentes umbrales
+    best_f1 = 0
+    best_threshold = 0.5
+    
+    print("\n--- Búsqueda de Umbral Óptimo ---")
+    for threshold in np.arange(0.1, 0.9, 0.05):
+        preds = (all_probs >= threshold).astype(int)
+        f1 = f1_score(all_labels, preds, zero_division=0)
+        recall = recall_score(all_labels, preds, zero_division=0)
+        precision = precision_score(all_labels, preds, zero_division=0)
+        
+        if f1 > best_f1:
+            best_f1 = f1
+            best_threshold = threshold
+            print(f"Threshold: {threshold:.2f} -> F1: {f1:.4f}, Recall: {recall:.4f}, Precision: {precision:.4f} *")
+    
+    print(f"\nMejor umbral: {best_threshold:.2f} con F1: {best_f1:.4f}")
+    return best_threshold
+
+# --- 7. Evaluación del Modelo ---
+def evaluar_modelo(model, test_loader, threshold=0.5):
+    """
+    Evalúa el modelo con métricas de clasificación.
+    
+    Args:
+        model: Modelo entrenado
+        test_loader: DataLoader con datos de test
+        threshold: Umbral para clasificación binaria
+    
+    Returns:
+        dict con métricas de evaluación
+    """
+    model.eval()
+    all_preds = []
+    all_labels = []
+    all_probs = []
+    
+    print("\n" + "="*70)
+    print("--- EVALUACIÓN DEL MODELO ---")
+    print("="*70)
+    
+    with torch.no_grad():
+        for X_batch, y_batch in test_loader:
+            probs = model.predict(X_batch)
+            preds = (probs >= threshold).float()
+            
+            all_probs.extend(probs.cpu().numpy().flatten())
+            all_preds.extend(preds.cpu().numpy().flatten())
+            all_labels.extend(y_batch.cpu().numpy().flatten())
+    
+    # Convertir a arrays numpy
+    all_preds = np.array(all_preds)
+    all_labels = np.array(all_labels)
+    all_probs = np.array(all_probs)
+    
+    # Calcular métricas
+    accuracy = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, zero_division=0)
+    recall = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
+    conf_matrix = confusion_matrix(all_labels, all_preds)
+    
+    # Mostrar resultados
+    print(f"\n1. MÉTRICAS DE CLASIFICACIÓN (threshold={threshold}):")
+    print("-" * 70)
+    print(f"   Accuracy:  {accuracy:.4f}")
+    print(f"   Precision: {precision:.4f}")
+    print(f"   Recall:    {recall:.4f}")
+    print(f"   F1-Score:  {f1:.4f}")
+    
+    print(f"\n2. MATRIZ DE CONFUSIÓN:")
+    print("-" * 70)
+    print(f"   {'':>15} Predicho 0  Predicho 1")
+    print(f"   {'Real 0':>15} {conf_matrix[0][0]:>10} {conf_matrix[0][1]:>10}")
+    if len(conf_matrix) > 1:
+        print(f"   {'Real 1':>15} {conf_matrix[1][0]:>10} {conf_matrix[1][1]:>10}")
+    
+    print(f"\n3. REPORTE DETALLADO:")
+    print("-" * 70)
+    print(classification_report(all_labels, all_preds, 
+                                target_names=['Normal', 'Anomalía'],
+                                zero_division=0))
+    
+    print(f"\n4. DISTRIBUCIÓN DE PREDICCIONES:")
+    print("-" * 70)
+    print(f"   Total muestras evaluadas: {len(all_labels)}")
+    print(f"   Anomalías reales: {int(all_labels.sum())} ({all_labels.mean()*100:.2f}%)")
+    print(f"   Anomalías predichas: {int(all_preds.sum())} ({all_preds.mean()*100:.2f}%)")
+    
+    print("\n" + "="*70)
+    
+    return {
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1_score': f1,
+        'confusion_matrix': conf_matrix,
+        'predictions': all_preds,
+        'labels': all_labels,
+        'probabilities': all_probs
+    }
 
 if __name__ == "__main__":
     archivo_pickle = "datos_procesados.pkl"
@@ -235,40 +422,65 @@ if __name__ == "__main__":
         with open(archivo_pickle, "rb") as f:
             datos_lista = pickle.load(f)
         
-        # Convertir a DataFrame para facilitar manipulación
         df = pd.DataFrame(datos_lista)
-        
-        # Asegurar orden temporal
         df['tiempo'] = pd.to_datetime(df['tiempo'])
         df = df.sort_values('tiempo').reset_index(drop=True)
 
-        # 1. Análisis de Correlación con el 100% de los datos
         num_anomalies = analizar_datos(df)
 
-        # 2. División Train/Test (90% Train, 10% Test)
-        # En series temporales NO hacemos shuffle, cortamos por tiempo.
-        split_idx = int(len(df) * 0.9)
+        # División 80% Train, 10% Val, 10% Test
+        train_idx = int(len(df) * 0.8)
+        val_idx = int(len(df) * 0.9)
         
-        train_df = df.iloc[:split_idx].copy()
-        test_df = df.iloc[split_idx:].copy()
+        train_df = df.iloc[:train_idx].copy()
+        val_df = df.iloc[train_idx:val_idx].copy()
+        test_df = df.iloc[val_idx:].copy()
         
         print(f"\nDatos de Entrenamiento: {len(train_df)} muestras")
-        print(f"Datos de Validación (Test): {len(test_df)} muestras")
+        print(f"Datos de Validación: {len(val_df)} muestras")
+        print(f"Datos de Test: {len(test_df)} muestras")
 
-        # 3. Preparar Dataset de Entrenamiento
-        # Usamos una ventana de 10 minutos (seq_len=10)
-        train_dataset = VoltageDropDataset(train_df, seq_len=10)
+        # Dataset con normalización
+        train_dataset = VoltageDropDataset(train_df, seq_len=10, fit_scaler=True)
+        scaler = train_dataset.scaler
         
-        # 4. Aplicar Data Augmentation si hay pocas anomalías
-        if num_anomalies < 1000: # Umbral arbitrario
-            print("Detectadas pocas anomalías. Aplicando Data Augmentation...")
-            train_dataset = aumentar_datos_con_ruido(train_dataset, factor=10)
+        val_dataset = VoltageDropDataset(val_df, seq_len=10, scaler=scaler)
+        test_dataset = VoltageDropDataset(test_df, seq_len=10, scaler=scaler)
         
-        train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        print(f"\nRatio de anomalías en train: {train_dataset.anomaly_ratio:.4%}")
+        print(f"Anomalías en train: {train_dataset.num_anomalies}")
+        
+        # Calcular peso para clase positiva
+        pos_weight = train_dataset.get_class_weights()
+        print(f"Peso para clase positiva: {pos_weight:.2f}")
+        
+        # Data Augmentation
+        if train_dataset.num_anomalies < 500:
+            print("Aplicando Data Augmentation...")
+            augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=15)
+            train_loader = DataLoader(augmented_dataset, batch_size=64, shuffle=True)
+        else:
+            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True)
+        
+        val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False)
+        test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False)
 
-        # 5. Instanciar y Entrenar Modelo
+        # Modelo mejorado
         print("\nEntrenando Modelo de Anomalías de Voltaje...")
-        model = VoltageAnomalyModel(input_size=3) # status, R1, R2
-        train_template(train_loader, model, epochs=5)
+        model = VoltageAnomalyModel(input_size=3, hidden_size=64, num_layers=2, dropout=0.3)
+        train_template(train_loader, model, epochs=30, pos_weight=pos_weight)
         
-        print("\nEntrenamiento finalizado. El modelo está listo para validación con test_df.")
+        # Encontrar umbral óptimo con validación
+        optimal_threshold = encontrar_umbral_optimo(model, val_loader)
+        
+        # Evaluar con umbral óptimo
+        print("\nEvaluando modelo con datos de test...")
+        metricas = evaluar_modelo(model, test_loader, threshold=optimal_threshold)
+        
+        print(f"\nResumen Final:")
+        print(f"  - Umbral óptimo: {optimal_threshold:.2f}")
+        print(f"  - F1-Score: {metricas['f1_score']:.4f}")
+        print(f"  - Recall: {metricas['recall']:.4f}")
+        print(f"  - Precision: {metricas['precision']:.4f}")
+        
+        print("\nEntrenamiento y evaluación finalizados.")

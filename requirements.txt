@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 Flask, numpy, pandas, torch
+=======
+Flask, numpy, pandas, torch, sklearn, matplotlib
+>>>>>>> 2a837972edf049e7ea2d5575e7571ad917700150

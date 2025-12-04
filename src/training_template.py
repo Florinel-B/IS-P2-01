@@ -157,8 +157,7 @@ class VoltageDropDataset(Dataset):
         
         # Calcular etiquetas con umbral más bajo para capturar más anomalías
         diffs = self.df[['R1_a', 'R2_a']].diff().shift(-1).abs()
-        # Umbral ajustable - 300mV puede ser más sensible
-        self.labels = ((diffs['R1_a'] > 300) | (diffs['R2_a'] > 300)).astype(int).values
+        self.labels = ((diffs['R1_a'] > 499) | (diffs['R2_a'] > 499)).astype(int).values
         
         self.seq_len = seq_len
         
@@ -238,17 +237,15 @@ class VoltageAnomalyModel(nn.Module):
             batch_first=True,
             dropout=dropout if num_layers > 1 else 0
         )
-        self.bn = nn.BatchNorm1d(hidden_size)
-        self.fc1 = nn.Linear(hidden_size, 32)
+        self.fc1 = nn.Linear(hidden_size, 128)
         self.relu = nn.ReLU()
         self.dropout = nn.Dropout(dropout)
-        self.fc2 = nn.Linear(32, 1)
+        self.fc2 = nn.Linear(128, 1)
         self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         _, (h_n, _) = self.lstm(x)
         out = h_n[-1]
-        out = self.bn(out)
         out = self.fc1(out)
         out = self.relu(out)
         out = self.dropout(out)
@@ -330,7 +327,7 @@ def encontrar_umbral_optimo(model, val_loader):
     return best_threshold
 
 # --- 7. Evaluación del Modelo ---
-def evaluar_modelo(model, test_loader, threshold=0.5):
+def evaluar_modelo(model, test_loader, threshold=0.6):
     """
     Evalúa el modelo con métricas de clasificación.
     

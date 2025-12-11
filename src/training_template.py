@@ -259,9 +259,9 @@ class VoltageAnomalyModelStateful(nn.Module):
         
         # Capa de atención temporal
         self.attention = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
+            nn.Linear(hidden_size, hidden_size),
             nn.Tanh(),
-            nn.Linear(hidden_size // 2, 1),
+            nn.Linear(hidden_size , 1),
             nn.Softmax(dim=1)
         )
         
@@ -606,7 +606,7 @@ class CosineAnnealingLRWithRestarts:
 
 # --- 7. Entrenamiento con Cosine Annealing ---
 
-def train_template(train_loader, model, val_loader=None, epochs=200, pos_weight=1.0, patience=10, device=None):
+def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None):
     """Entrenamiento con Cosine Annealing LR scheduler y soporte CUDA."""
     if device is None:
         device = DEVICE
@@ -650,9 +650,10 @@ def train_template(train_loader, model, val_loader=None, epochs=200, pos_weight=
             
             weight = torch.where(y_batch == 1, pos_weight_tensor, torch.tensor(1.0, device=device))
             loss = nn.functional.binary_cross_entropy(y_pred, y_batch, weight=weight)
+            loss = nn.functional.l1_loss(y_pred, y_batch)
             
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             total_loss += loss.item()
         
@@ -880,6 +881,113 @@ def demo_prediccion_online(model, scaler, test_df, threshold=0.5, device=None):
     return predictor, resultados
 
 
+# --- 11. Funciones de Exportación/Importación ---
+
+def exportar_modelo_portable(model, scaler, threshold, input_size, seq_len, save_path='modelo_anomalias.pth', ca_stats=None):
+    """
+    Exporta el modelo de manera portable para usarlo en otros proyectos.
+    
+    Args:
+        model: Modelo entrenado
+        scaler: StandardScaler ajustado
+        threshold: Umbral óptimo de clasificación
+        input_size: Número de features de entrada
+        seq_len: Longitud de secuencia
+        save_path: Ruta donde guardar el modelo
+        ca_stats: Estadísticas del Cosine Annealing (opcional)
+    """
+    model_cpu = model.cpu()
+    
+    checkpoint = {
+        'model_state_dict': model_cpu.state_dict(),
+        'model_config': {
+            'input_size': input_size,
+            'hidden_size': model.hidden_size,
+            'num_layers': model.num_layers,
+            'dropout': 0.3  # Valor por defecto usado
+        },
+        'scaler': scaler,
+        'threshold': threshold,
+        'seq_len': seq_len,
+        'input_size': input_size,
+        'ca_stats': ca_stats
+    }
+    
+    torch.save(checkpoint, save_path)
+    print(f"\n✅ Modelo exportado exitosamente a: {save_path}")
+    print(f"   Input size: {input_size}")
+    print(f"   Seq length: {seq_len}")
+    print(f"   Threshold: {threshold:.4f}")
+    return checkpoint
+
+
+def importar_modelo_portable(checkpoint_path, device=None):
+    """
+    Importa un modelo exportado de manera portable.
+    
+    Args:
+        checkpoint_path: Ruta al archivo .pth
+        device: Dispositivo donde cargar el modelo (auto-detecta si es None)
+    
+    Returns:
+        dict con: model, scaler, threshold, config
+    """
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    print(f"\n📦 Cargando modelo desde: {checkpoint_path}")
+    print(f"   Dispositivo: {device}")
+    
+    # Cargar checkpoint
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    
+    # Extraer configuración
+    if 'model_config' in checkpoint:
+        config = checkpoint['model_config']
+    else:
+        # Compatibilidad con versiones antiguas
+        config = {
+            'input_size': checkpoint['input_size'],
+            'hidden_size': 128,
+            'num_layers': 3,
+            'dropout': 0.3
+        }
+    
+    # Reconstruir modelo
+    model = VoltageAnomalyModelStateful(
+        input_size=config['input_size'],
+        hidden_size=config['hidden_size'],
+        num_layers=config['num_layers'],
+        dropout=config['dropout']
+    )
+    
+    # Cargar pesos
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model.to(device)
+    model.eval()
+    
+    # Extraer otros componentes
+    scaler = checkpoint['scaler']
+    threshold = checkpoint['threshold']
+    seq_len = checkpoint.get('seq_len', 60)
+    
+    print(f"✅ Modelo cargado exitosamente")
+    print(f"   Input size: {config['input_size']}")
+    print(f"   Hidden size: {config['hidden_size']}")
+    print(f"   Num layers: {config['num_layers']}")
+    print(f"   Seq length: {seq_len}")
+    print(f"   Threshold: {threshold:.4f}")
+    
+    return {
+        'model': model,
+        'scaler': scaler,
+        'threshold': threshold,
+        'config': config,
+        'seq_len': seq_len,
+        'device': device
+    }
+
+
 if __name__ == "__main__":
     archivo_pickle = "datos_procesados.pkl"
     
@@ -930,9 +1038,9 @@ if __name__ == "__main__":
         if train_dataset.num_anomalies < 200:
             print("Aplicando Data Augmentation...")
             augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=20)
-            train_loader = DataLoader(augmented_dataset, batch_size=64, shuffle=True, **loader_kwargs)
+            train_loader = DataLoader(augmented_dataset, batch_size=64, shuffle=False, **loader_kwargs)
         else:
-            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, **loader_kwargs)
+            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, **loader_kwargs)
         
         val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, **loader_kwargs)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, **loader_kwargs)
@@ -951,7 +1059,7 @@ if __name__ == "__main__":
         # Ahora train_template retorna también el scheduler
         model, ca_scheduler = train_template(
             train_loader, model, val_loader, 
-            epochs=200, pos_weight=pos_weight, patience=20, device=DEVICE
+            epochs=400, pos_weight=pos_weight, patience=20, device=DEVICE
         )
         
         optimal_threshold = encontrar_umbral_optimo(model, val_loader, device=DEVICE)
@@ -961,17 +1069,13 @@ if __name__ == "__main__":
         
         predictor, resultados = demo_prediccion_online(model, scaler, test_df, threshold=optimal_threshold, device=DEVICE)
         
-        # Guardar modelo con info del scheduler
+        # Guardar modelo de manera portable
         print("\nGuardando modelo...")
-        model_cpu = model.cpu()
-        torch.save({
-            'model_state_dict': model_cpu.state_dict(),
-            'scaler': scaler,
-            'threshold': optimal_threshold,
-            'input_size': input_size,
-            'seq_len': SEQ_LEN,
-            'ca_stats': ca_scheduler.get_stats()
-        }, 'modelo_anomalias.pth')
+        exportar_modelo_portable(
+            model, scaler, optimal_threshold, input_size, SEQ_LEN,
+            save_path='modelo_anomalias.pth',
+            ca_stats=ca_scheduler.get_stats()
+        )
         
         print(f"\n{'='*70}")
         print("RESUMEN FINAL")

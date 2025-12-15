@@ -230,7 +230,37 @@ class VoltageDropDataset(Dataset):
             return 1.0
         return n_neg / n_pos
 
-# --- 3. Modelo con Estado Oculto Persistente ---
+# --- 3. Variational Dropout para Secuencias Temporales ---
+
+class VariationalDropout(nn.Module):
+    """
+    Dropout variacional que usa la misma máscara en todos los timesteps.
+    Esto es más apropiado para secuencias temporales que el dropout estándar.
+    """
+    def __init__(self, dropout=0.3):
+        super().__init__()
+        self.dropout = dropout
+        
+    def forward(self, x):
+        """
+        Args:
+            x: tensor [batch, seq_len, features]
+        Returns:
+            tensor con dropout aplicado con la misma máscara en todos los timesteps
+        """
+        if not self.training or self.dropout == 0:
+            return x
+        
+        # Crear máscara que se repite en el tiempo: [batch, 1, features]
+        # La máscara se expande automáticamente a [batch, seq_len, features]
+        mask = torch.bernoulli(
+            torch.ones(x.size(0), 1, x.size(2), device=x.device) * (1 - self.dropout)
+        )
+        # Escalar por (1 - dropout) para mantener la expectativa
+        return x * mask / (1 - self.dropout)
+
+
+# --- 4. Modelo con Estado Oculto Persistente y Regularización Mejorada ---
 
 class VoltageAnomalyModelStateful(nn.Module):
     def __init__(self, input_size=14, hidden_size=128, num_layers=3, dropout=0.3):
@@ -248,6 +278,9 @@ class VoltageAnomalyModelStateful(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
         
+        # Dropout variacional para entrada (mismo dropout en todos los timesteps)
+        self.variational_dropout = VariationalDropout(dropout=dropout * 0.5)  # Más suave en entrada
+        
         # LSTM principal
         self.lstm = nn.LSTM(
             input_size, 
@@ -257,24 +290,23 @@ class VoltageAnomalyModelStateful(nn.Module):
             dropout=dropout if num_layers > 1 else 0
         )
         
-        # Capa de atención temporal
-        self.attention = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size),
-            nn.Tanh(),
-            nn.Linear(hidden_size , 1),
-            nn.Softmax(dim=1)
-        )
+        # Dropout variacional para salida LSTM
+        self.variational_dropout_out = VariationalDropout(dropout=dropout)
         
-        # Clasificador
+        # Capa de atención temporal simplificada y corregida
+        self.attention_weights = nn.Linear(hidden_size, 1)
+        
+        # Clasificador mejorado con LayerNorm
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_size * 2, 64),  # *2 por concatenar atención + último estado
+            nn.Linear(hidden_size, 64),
+            nn.LayerNorm(64),
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(64, 32),
+            nn.LayerNorm(32),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(32, 1),
-            nn.Sigmoid()
+            nn.Linear(32, 1)  # Sin Sigmoid, usaremos BCEWithLogitsLoss
         )
         
         # Estado oculto persistente (para inferencia online)
@@ -289,7 +321,7 @@ class VoltageAnomalyModelStateful(nn.Module):
             hidden: Estado oculto opcional (h_n, c_n)
         
         Returns:
-            output: Predicción de anomalía
+            logits: Logits sin sigmoid [batch, 1]
             hidden: Nuevo estado oculto
         """
         batch_size = x.size(0)
@@ -298,23 +330,24 @@ class VoltageAnomalyModelStateful(nn.Module):
         if hidden is None:
             hidden = self._init_hidden(batch_size, x.device)
         
-        # LSTM
-        lstm_out, hidden_new = self.lstm(x, hidden)  # lstm_out: [batch, seq, hidden]
+        # Aplicar dropout variacional a la entrada
+        x_dropped = self.variational_dropout(x)
         
-        # Atención temporal
-        attn_weights = self.attention(lstm_out)  # [batch, seq, 1]
+        # LSTM
+        lstm_out, hidden_new = self.lstm(x_dropped, hidden)  # lstm_out: [batch, seq, hidden]
+        
+        # Aplicar dropout variacional a la salida del LSTM
+        lstm_out = self.variational_dropout_out(lstm_out)
+        
+        # Atención temporal corregida
+        attn_logits = self.attention_weights(lstm_out)  # [batch, seq, 1]
+        attn_weights = torch.softmax(attn_logits, dim=1)  # Normalizar sobre secuencia
         context = torch.sum(lstm_out * attn_weights, dim=1)  # [batch, hidden]
         
-        # Último estado oculto
-        last_hidden = hidden_new[0][-1]  # [batch, hidden]
+        # Clasificación (retorna logits sin sigmoid)
+        logits = self.classifier(context)
         
-        # Concatenar contexto de atención + último estado
-        combined = torch.cat([context, last_hidden], dim=1)  # [batch, hidden*2]
-        
-        # Clasificación
-        output = self.classifier(combined)
-        
-        return output, hidden_new
+        return logits, hidden_new
 
     def _init_hidden(self, batch_size, device):
         """Inicializa el estado oculto."""
@@ -323,15 +356,17 @@ class VoltageAnomalyModelStateful(nn.Module):
         return (h0, c0)
 
     def predict(self, x, hidden=None):
-        """Wrapper para predicción."""
-        return self.forward(x, hidden)
+        """Wrapper para predicción con sigmoid."""
+        logits, hidden_new = self.forward(x, hidden)
+        probs = torch.sigmoid(logits)
+        return probs, hidden_new
 
     def reset_state(self):
         """Reinicia el estado oculto persistente."""
         self.hidden_state = None
 
 
-# --- 4. Predictor Online con Memoria ---
+# --- 5. Predictor Online con Memoria ---
 
 class OnlinePredictor:
     """
@@ -476,7 +511,7 @@ class OnlinePredictor:
         self.samples_processed = 0
 
 
-# --- 5. Data Augmentation ---
+# --- 6. Data Augmentation ---
 
 def aumentar_datos_con_ruido(dataset, factor=5):
     """Genera datos sintéticos solo para la clase minoritaria."""
@@ -487,6 +522,7 @@ def aumentar_datos_con_ruido(dataset, factor=5):
     anomaly_count = 0
     normal_count = 0
     
+    # Primero agregar todos los datos originales
     for i in range(len(dataset)):
         x, y = dataset[i]
         features_list.append(x)
@@ -494,23 +530,29 @@ def aumentar_datos_con_ruido(dataset, factor=5):
         
         if y == 1.0:
             anomaly_count += 1
-            for _ in range(factor):
-                noise = torch.randn_like(x) * 0.05
-                features_list.append(x + noise)
-                labels_list.append(y)
         else:
             normal_count += 1
+    
+    # Luego agregar augmentación solo de anomalías
+    for i in range(len(dataset)):
+        x, y = dataset[i]
+        if y == 1.0:
+            for _ in range(factor):
+                noise = torch.randn_like(x) * 0.02  # Reducido de 0.05 a 0.02
+                features_list.append(x + noise)
+                labels_list.append(y)
     
     print(f"Anomalías originales: {anomaly_count}")
     print(f"Normales originales: {normal_count}")
     print(f"Datos tras aumentación: {len(features_list)}")
+    print(f"Ratio final: {(anomaly_count * (factor + 1)) / len(features_list):.2%}")
     
     x_tensor = torch.stack(features_list)
     y_tensor = torch.stack(labels_list)
     return torch.utils.data.TensorDataset(x_tensor, y_tensor)
 
 
-# --- 6. Cosine Annealing Learning Rate Scheduler con Warm Restarts ---
+# --- 7. Cosine Annealing Learning Rate Scheduler con Warm Restarts ---
 
 class CosineAnnealingLRWithRestarts:
     """
@@ -519,7 +561,7 @@ class CosineAnnealingLRWithRestarts:
     El LR sigue un patrón coseno que decae y se reinicia periódicamente,
     permitiendo escapar de mínimos locales.
     """
-    def __init__(self, optimizer, T_0=20, T_mult=2, eta_min=1e-6, initial_lr=0.01):
+    def __init__(self, optimizer, T_0=20, T_mult=2, eta_min=1e-6, initial_lr=0.075):
         """
         Args:
             optimizer: Optimizador de PyTorch
@@ -604,30 +646,46 @@ class CosineAnnealingLRWithRestarts:
         }
 
 
-# --- 7. Entrenamiento con Cosine Annealing ---
+# --- 8. Entrenamiento con Cosine Annealing y SWA ---
 
-def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None):
-    """Entrenamiento con Cosine Annealing LR scheduler y soporte CUDA."""
+def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None, use_swa=True, swa_start=100):
+    """
+    Entrenamiento con Cosine Annealing LR scheduler, SWA y soporte CUDA.
+    
+    Args:
+        use_swa: Si usar Stochastic Weight Averaging
+        swa_start: Epoch en el que comenzar SWA
+    """
     if device is None:
         device = DEVICE
     
     model = model.to(device)
-    pos_weight_tensor = torch.tensor(pos_weight, device=device)
     
-    criterion = nn.BCELoss()
-    initial_lr = 0.01
+    # Usar BCEWithLogitsLoss (más estable, incluye sigmoid)
+    criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
+    
+    initial_lr = 0.001  # LR más bajo
     optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=1e-4)
     
     # Cosine Annealing con Warm Restarts
-    # T_0=30: primer ciclo de 30 epochs
-    # T_mult=2: cada ciclo siguiente dura el doble (30, 60, 120, ...)
+    # T_0=20: primer ciclo de 20 epochs (más corto para ver progreso antes)
+    # T_mult=2: cada ciclo siguiente dura el doble (20, 40, 80, ...)
     ca_scheduler = CosineAnnealingLRWithRestarts(
         optimizer,
-        T_0=30,
+        T_0=20,
         T_mult=2,
-        eta_min=1e-6,
+        eta_min=1e-7,
         initial_lr=initial_lr
     )
+    
+    # Configurar SWA (Stochastic Weight Averaging)
+    swa_model = None
+    swa_scheduler = None
+    if use_swa:
+        from torch.optim.swa_utils import AveragedModel, SWALR
+        swa_model = AveragedModel(model)
+        swa_scheduler = SWALR(optimizer, swa_lr=initial_lr * 0.1)  # LR más bajo para SWA
+        print(f"   SWA habilitado: comenzará en epoch {swa_start}")
     
     best_val_f1 = 0
     best_model_state = None
@@ -646,37 +704,56 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
             y_batch = y_batch.to(device)
             
             optimizer.zero_grad()
-            y_pred, _ = model(X_batch)
+            logits, _ = model(X_batch)  # Ahora retorna logits
             
-            weight = torch.where(y_batch == 1, pos_weight_tensor, torch.tensor(1.0, device=device))
-            loss = nn.functional.binary_cross_entropy(y_pred, y_batch, weight=weight)
-            loss = nn.functional.l1_loss(y_pred, y_batch)
+            loss = criterion(logits, y_batch)  # BCEWithLogitsLoss
             
             loss.backward()
-            #torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)  # Gradient clipping
             optimizer.step()
             total_loss += loss.item()
         
         avg_loss = total_loss / len(train_loader)
         
-        # Actualizar scheduler
-        current_lr = ca_scheduler.step(avg_loss)
+        # Actualizar scheduler (después de swa_start, usar swa_scheduler)
+        if use_swa and epoch >= swa_start:
+            swa_model.update_parameters(model)
+            swa_scheduler.step()
+            current_lr = swa_scheduler.get_last_lr()[0] if hasattr(swa_scheduler, 'get_last_lr') else optimizer.param_groups[0]['lr']
+        else:
+            current_lr = ca_scheduler.step(avg_loss)
         
         # Validación
         val_f1 = 0
+        val_loss = 0
+        val_precision = 0
+        val_recall = 0
         if val_loader is not None:
             model.eval()
             all_preds, all_labels = [], []
+            val_loss_sum = 0
+            val_batch_count = 0
+            
             with torch.no_grad():
                 for X_batch, y_batch in val_loader:
                     X_batch = X_batch.to(device)
                     y_batch = y_batch.to(device)
                     
-                    probs, _ = model(X_batch)
+                    probs, _ = model.predict(X_batch)  # Usar predict que aplica sigmoid
                     preds = (probs >= 0.5).float()
+                    
+                    # Loss de validación
+                    logits, _ = model(X_batch)
+                    val_loss_sum += criterion(logits, y_batch).item()
+                    val_batch_count += 1
+                    
                     all_preds.extend(preds.cpu().numpy().flatten())
                     all_labels.extend(y_batch.cpu().numpy().flatten())
+            
+            val_loss = val_loss_sum / val_batch_count
             val_f1 = f1_score(all_labels, all_preds, zero_division=0)
+            val_recall = recall_score(all_labels, all_preds, zero_division=0)
+            val_precision = precision_score(all_labels, all_preds, zero_division=0)
             model.train()
             
             if val_f1 > best_val_f1:
@@ -686,15 +763,21 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
             else:
                 epochs_without_improvement += 1
         
-        # Mostrar progreso
-        if (epoch + 1) % 10 == 0:
+        # Mostrar progreso cada 5 epochs
+        if (epoch + 1) % 5 == 0:
             restart_info = f"Restarts: {ca_scheduler.restarts}"
-            print(f"Epoch {epoch+1:3d}/{epochs} | Loss: {avg_loss:.4f} | Val F1: {val_f1:.4f} | "
+            print(f"Epoch {epoch+1:3d}/{epochs} | "
+                  f"Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
+                  f"Val F1: {val_f1:.4f} (P:{val_precision:.3f} R:{val_recall:.3f}) | "
                   f"LR: {current_lr:.6f} | {restart_info}")
         
         # Mostrar eventos de restart
         if ca_scheduler.restart_epochs and ca_scheduler.restart_epochs[-1] == epoch + 1:
             print(f"   🔄 WARM RESTART en epoch {epoch+1}: LR -> {current_lr:.6f}")
+        
+        # Mostrar cuando comienza SWA
+        if use_swa and epoch == swa_start:
+            print(f"   📊 SWA ACTIVADO en epoch {epoch+1}: promediando pesos")
         
     
     # Estadísticas finales
@@ -708,15 +791,47 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
     print(f"   LR final: {stats['current_lr']:.6f}")
     print(f"{'='*70}")
     
-    if best_model_state is not None:
+    # Si usamos SWA, actualizar batch normalization y usar el modelo promediado
+    if use_swa and swa_model is not None:
+        print("\n📊 Finalizando SWA...")
+        # Actualizar estadísticas de batch normalization
+        from torch.optim.swa_utils import update_bn
+        update_bn(train_loader, swa_model, device=device)
+        
+        # Evaluar modelo SWA vs mejor modelo
+        print("Evaluando modelo SWA...")
+        swa_model.eval()
+        swa_preds, swa_labels = [], []
+        with torch.no_grad():
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                probs, _ = swa_model.module.predict(X_batch)
+                preds = (probs >= 0.5).float()
+                swa_preds.extend(preds.cpu().numpy().flatten())
+                swa_labels.extend(y_batch.cpu().numpy().flatten())
+        
+        swa_f1 = f1_score(swa_labels, swa_preds, zero_division=0)
+        print(f"   F1 con SWA: {swa_f1:.4f}")
+        print(f"   Mejor F1 sin SWA: {best_val_f1:.4f}")
+        
+        # Usar el mejor entre SWA y el mejor modelo guardado
+        if swa_f1 > best_val_f1:
+            print(f"✅ Usando modelo SWA (mejor F1: {swa_f1:.4f})")
+            model = swa_model.module
+            best_val_f1 = swa_f1
+        elif best_model_state is not None:
+            print(f"✅ Usando mejor modelo guardado (mejor F1: {best_val_f1:.4f})")
+            model.load_state_dict(best_model_state)
+            model = model.to(device)
+    elif best_model_state is not None:
         model.load_state_dict(best_model_state)
         model = model.to(device)
-        print(f"Restaurado mejor modelo con Val F1: {best_val_f1:.4f}")
+        print(f"✅ Restaurado mejor modelo con Val F1: {best_val_f1:.4f}")
     
     return model, ca_scheduler
 
 
-# --- 8. Búsqueda de Umbral Óptimo con CUDA ---
+# --- 9. Búsqueda de Umbral Óptimo con CUDA ---
 
 def encontrar_umbral_optimo(model, val_loader, device=None):
     """Encuentra el umbral que maximiza F1-score."""
@@ -758,7 +873,57 @@ def encontrar_umbral_optimo(model, val_loader, device=None):
     return best_threshold
 
 
-# --- 9. Evaluación del Modelo con CUDA ---
+def encontrar_umbral_por_precision(model, val_loader, target_precision=0.70, device=None):
+    """Busca el umbral mínimo que alcanza la precisión objetivo en validación.
+
+    Si no se alcanza la precisión objetivo, retorna el umbral con mayor precisión.
+    """
+    if device is None:
+        device = DEVICE
+
+    model = model.to(device)
+    model.eval()
+    all_probs = []
+    all_labels = []
+
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            X_batch = X_batch.to(device)
+            probs, _ = model.predict(X_batch)
+            all_probs.extend(probs.cpu().numpy().flatten())
+            all_labels.extend(y_batch.numpy().flatten())
+
+    all_probs = np.array(all_probs)
+    all_labels = np.array(all_labels)
+
+    print("\n--- Búsqueda de Umbral por Precisión ---")
+    best_prec = 0.0
+    best_thr = 0.5
+    best_metrics = (0.0, 0.0)  # (recall, f1)
+
+    # Barrido más fino para priorizar precisión
+    for threshold in np.arange(0.10, 0.95, 0.02):
+        preds = (all_probs >= threshold).astype(int)
+        prec = precision_score(all_labels, preds, zero_division=0)
+        rec = recall_score(all_labels, preds, zero_division=0)
+        f1 = f1_score(all_labels, preds, zero_division=0)
+
+        # Guardar el mejor por precisión alcanzada
+        if prec > best_prec or (prec == best_prec and f1 > best_metrics[1]):
+            best_prec = prec
+            best_thr = threshold
+            best_metrics = (rec, f1)
+
+        # Primer umbral que alcanza la precisión objetivo
+        if prec >= target_precision:
+            print(f"Objetivo alcanzado: Thr {threshold:.2f} -> Precision {prec:.4f}, Recall {rec:.4f}, F1 {f1:.4f} *")
+            return threshold
+
+    print(f"No se alcanzó precisión {target_precision:.2f}. Mejor: Thr {best_thr:.2f} -> Precision {best_prec:.4f}, Recall {best_metrics[0]:.4f}, F1 {best_metrics[1]:.4f}")
+    return best_thr
+
+
+# --- 10. Evaluación del Modelo con CUDA ---
 
 def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
     """Evalúa el modelo con métricas de clasificación."""
@@ -779,7 +944,7 @@ def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
         for X_batch, y_batch in test_loader:
             X_batch = X_batch.to(device)
             
-            probs, _ = model(X_batch)
+            probs, _ = model.predict(X_batch)  # Usar predict() que aplica sigmoid
             preds = (probs >= threshold).float()
             
             all_probs.extend(probs.cpu().numpy().flatten())
@@ -836,7 +1001,7 @@ def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
     }
 
 
-# --- 10. Demostración de Predicción Online ---
+# --- 11. Demostración de Predicción Online ---
 
 def demo_prediccion_online(model, scaler, test_df, threshold=0.5, device=None):
     """Demuestra el uso del predictor online."""
@@ -881,7 +1046,7 @@ def demo_prediccion_online(model, scaler, test_df, threshold=0.5, device=None):
     return predictor, resultados
 
 
-# --- 11. Funciones de Exportación/Importación ---
+# --- 12. Funciones de Exportación/Importación ---
 
 def exportar_modelo_portable(model, scaler, threshold, input_size, seq_len, save_path='modelo_anomalias.pth', ca_stats=None):
     """
@@ -1037,10 +1202,10 @@ if __name__ == "__main__":
         
         if train_dataset.num_anomalies < 200:
             print("Aplicando Data Augmentation...")
-            augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=20)
-            train_loader = DataLoader(augmented_dataset, batch_size=64, shuffle=False, **loader_kwargs)
+            augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=10)  # Reducido de 20 a 10
+            train_loader = DataLoader(augmented_dataset, batch_size=32, shuffle=True, **loader_kwargs)  # shuffle=True, batch_size=32
         else:
-            train_loader = DataLoader(train_dataset, batch_size=64, shuffle=False, **loader_kwargs)
+            train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, **loader_kwargs)  # shuffle=True, batch_size=32
         
         val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, **loader_kwargs)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, **loader_kwargs)
@@ -1052,17 +1217,20 @@ if __name__ == "__main__":
         model = VoltageAnomalyModelStateful(
             input_size=input_size,
             hidden_size=128,
-            num_layers=3,
+            num_layers=3,  # Reducido de 5 a 3 capas
             dropout=0.3
         ).to(DEVICE)
         
         # Ahora train_template retorna también el scheduler
         model, ca_scheduler = train_template(
             train_loader, model, val_loader, 
-            epochs=400, pos_weight=pos_weight, patience=20, device=DEVICE
+            epochs=400, pos_weight=pos_weight, patience=15, device=DEVICE,
+            use_swa=True, swa_start=80  # SWA activado, comienza en epoch 100
         )
         
-        optimal_threshold = encontrar_umbral_optimo(model, val_loader, device=DEVICE)
+        # Elegir umbral priorizando precisión en validación
+        target_precision = 0.70
+        optimal_threshold = encontrar_umbral_por_precision(model, val_loader, target_precision=target_precision, device=DEVICE)
         
         print("\nEvaluando modelo con datos de test (modo batch)...")
         metricas = evaluar_modelo(model, test_loader, threshold=optimal_threshold, device=DEVICE)
@@ -1081,7 +1249,7 @@ if __name__ == "__main__":
         print("RESUMEN FINAL")
         print(f"{'='*70}")
         print(f"  Dispositivo usado: {DEVICE}")
-        print(f"  Umbral óptimo: {optimal_threshold:.2f}")
+        print(f"  Umbral óptimo (precisión≥{target_precision:.2f}): {optimal_threshold:.2f}")
         print(f"  F1-Score: {metricas['f1_score']:.4f}")
         print(f"  Recall: {metricas['recall']:.4f}")
         print(f"  Precision: {metricas['precision']:.4f}")

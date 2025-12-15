@@ -263,7 +263,7 @@ class VariationalDropout(nn.Module):
 # --- 4. Modelo con Estado Oculto Persistente y Regularización Mejorada ---
 
 class VoltageAnomalyModelStateful(nn.Module):
-    def __init__(self, input_size=14, hidden_size=128, num_layers=3, dropout=0.3):
+    def __init__(self, input_size=14, hidden_size=192, num_layers=4, dropout=0.3):
         """
         Modelo LSTM con capacidad de mantener estado entre predicciones.
         
@@ -561,7 +561,7 @@ class CosineAnnealingLRWithRestarts:
     El LR sigue un patrón coseno que decae y se reinicia periódicamente,
     permitiendo escapar de mínimos locales.
     """
-    def __init__(self, optimizer, T_0=20, T_mult=2, eta_min=1e-6, initial_lr=0.075):
+    def __init__(self, optimizer, T_0=400, T_mult=1, eta_min=1e-6, initial_lr=0.075):
         """
         Args:
             optimizer: Optimizador de PyTorch
@@ -611,6 +611,12 @@ class CosineAnnealingLRWithRestarts:
         self.epoch += 1
         
         new_lr = self.get_lr()
+
+        # Capar LR para evitar saltos por encima del inicial en los restarts
+        if new_lr > self.initial_lr:
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = self.initial_lr
+            new_lr = self.initial_lr
         
         # Detectar si hubo un restart (LR subió significativamente)
         if new_lr > old_lr * 1.5 and self.epoch > 1:
@@ -648,7 +654,7 @@ class CosineAnnealingLRWithRestarts:
 
 # --- 8. Entrenamiento con Cosine Annealing y SWA ---
 
-def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None, use_swa=True, swa_start=100):
+def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None, use_swa=True, swa_start=120):
     """
     Entrenamiento con Cosine Annealing LR scheduler, SWA y soporte CUDA.
     
@@ -664,7 +670,7 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
     # Usar BCEWithLogitsLoss (más estable, incluye sigmoid)
     criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([pos_weight], device=device))
     
-    initial_lr = 0.001  # LR más bajo
+    initial_lr = 0.0025  # LR más bajo para estabilizar
     optimizer = optim.AdamW(model.parameters(), lr=initial_lr, weight_decay=1e-4)
     
     # Cosine Annealing con Warm Restarts
@@ -672,8 +678,8 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
     # T_mult=2: cada ciclo siguiente dura el doble (20, 40, 80, ...)
     ca_scheduler = CosineAnnealingLRWithRestarts(
         optimizer,
-        T_0=20,
-        T_mult=2,
+        T_0=400,  # Efectivamente sin restarts tempranos
+        T_mult=1,
         eta_min=1e-7,
         initial_lr=initial_lr
     )
@@ -697,6 +703,8 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
     print(f"{'='*70}")
     
     model.train()
+    warmup_epochs = 10
+
     for epoch in range(epochs):
         total_loss = 0
         for X_batch, y_batch in train_loader:
@@ -715,13 +723,20 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
         
         avg_loss = total_loss / len(train_loader)
         
-        # Actualizar scheduler (después de swa_start, usar swa_scheduler)
-        if use_swa and epoch >= swa_start:
-            swa_model.update_parameters(model)
-            swa_scheduler.step()
-            current_lr = swa_scheduler.get_last_lr()[0] if hasattr(swa_scheduler, 'get_last_lr') else optimizer.param_groups[0]['lr']
+        # Warmup manual los primeros epochs
+        if epoch < warmup_epochs:
+            warmup_lr = initial_lr * (epoch + 1) / warmup_epochs
+            for param_group in optimizer.param_groups:
+                param_group['lr'] = warmup_lr
+            current_lr = warmup_lr
         else:
-            current_lr = ca_scheduler.step(avg_loss)
+            # Actualizar scheduler (después de swa_start, usar swa_scheduler)
+            if use_swa and epoch >= swa_start:
+                swa_model.update_parameters(model)
+                swa_scheduler.step()
+                current_lr = swa_scheduler.get_last_lr()[0] if hasattr(swa_scheduler, 'get_last_lr') else optimizer.param_groups[0]['lr']
+            else:
+                current_lr = ca_scheduler.step(avg_loss)
         
         # Validación
         val_f1 = 0
@@ -739,7 +754,7 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
                     X_batch = X_batch.to(device)
                     y_batch = y_batch.to(device)
                     
-                    probs, _ = model.predict(X_batch)  # Usar predict que aplica sigmoid
+                    probs, _ = model.predict(X_batch) 
                     preds = (probs >= 0.5).float()
                     
                     # Loss de validación
@@ -1195,14 +1210,16 @@ if __name__ == "__main__":
         print(f"Ratio de anomalías en train: {train_dataset.anomaly_ratio:.4%}")
         print(f"Anomalías en train: {train_dataset.num_anomalies}")
         
-        pos_weight = train_dataset.get_class_weights()
-        print(f"Peso para clase positiva: {pos_weight:.2f}")
+        pos_weight_base = train_dataset.get_class_weights()
+        pos_weight = pos_weight_base * 1.5  # Aumentar penalidad para falsos negativos (maximizar recall)
+        print(f"Peso para clase positiva (base): {pos_weight_base:.2f}")
+        print(f"Peso para clase positiva (ajustado x1.5 para recall): {pos_weight:.2f}")
         
         loader_kwargs = {'pin_memory': True, 'num_workers': 4} if torch.cuda.is_available() else {}
         
         if train_dataset.num_anomalies < 200:
             print("Aplicando Data Augmentation...")
-            augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=10)  # Reducido de 20 a 10
+            augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=6)  # Reducido a 6 para balance natural
             train_loader = DataLoader(augmented_dataset, batch_size=32, shuffle=True, **loader_kwargs)  # shuffle=True, batch_size=32
         else:
             train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, **loader_kwargs)  # shuffle=True, batch_size=32
@@ -1216,20 +1233,18 @@ if __name__ == "__main__":
         
         model = VoltageAnomalyModelStateful(
             input_size=input_size,
-            hidden_size=128,
-            num_layers=3,  # Reducido de 5 a 3 capas
-            dropout=0.3
         ).to(DEVICE)
         
         # Ahora train_template retorna también el scheduler
         model, ca_scheduler = train_template(
             train_loader, model, val_loader, 
-            epochs=400, pos_weight=pos_weight, patience=15, device=DEVICE,
+            epochs=40, pos_weight=pos_weight, patience=15, device=DEVICE,
             use_swa=True, swa_start=80  # SWA activado, comienza en epoch 100
         )
         
-        # Elegir umbral priorizando precisión en validación
-        target_precision = 0.70
+        # Elegir umbral priorizando RECALL (detección de anomalías) sobre precisión
+        # Objetivo más bajo para maximizar true positives, aceptando más falsos positivos
+        target_precision = 0.60
         optimal_threshold = encontrar_umbral_por_precision(model, val_loader, target_precision=target_precision, device=DEVICE)
         
         print("\nEvaluando modelo con datos de test (modo batch)...")
@@ -1249,7 +1264,7 @@ if __name__ == "__main__":
         print("RESUMEN FINAL")
         print(f"{'='*70}")
         print(f"  Dispositivo usado: {DEVICE}")
-        print(f"  Umbral óptimo (precisión≥{target_precision:.2f}): {optimal_threshold:.2f}")
+        print(f"  Umbral óptimo (maximizando recall, precisión≥{target_precision:.2f}): {optimal_threshold:.2f}")
         print(f"  F1-Score: {metricas['f1_score']:.4f}")
         print(f"  Recall: {metricas['recall']:.4f}")
         print(f"  Precision: {metricas['precision']:.4f}")

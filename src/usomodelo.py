@@ -14,7 +14,7 @@ from training_template import VoltageDropDataset, importar_modelo_portable
 
 MODEL_PATH = "modelo_anomalias.pth"
 DATA_PATH = "datos_procesados.pkl"
-BATCH_SIZE = 64
+BATCH_SIZE = 32
 
 
 def ensure_file(path: str) -> None:

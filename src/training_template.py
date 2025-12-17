@@ -706,7 +706,7 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
         optimizer,
         T_0=50,  # Efectivamente sin restarts tempranos
         T_mult=1,
-        eta_min=1e-7,
+        eta_min=1e-4,
         initial_lr=initial_lr
     )
     
@@ -1237,9 +1237,9 @@ if __name__ == "__main__":
         print(f"Anomalías en train: {train_dataset.num_anomalies}")
         
         pos_weight_base = train_dataset.get_class_weights()
-        pos_weight = pos_weight_base * 1.2  # Aumentar penalidad para falsos negativos (maximizar recall)
+        pos_weight = pos_weight_base * 0.75  # Aumentar penalidad para falsos negativos (maximizar recall)
         print(f"Peso para clase positiva (base): {pos_weight_base:.2f}")
-        print(f"Peso para clase positiva (ajustado x1.2 para recall): {pos_weight:.2f}")
+        print(f"Peso para clase positiva (ajustado x0.75 para recall): {pos_weight:.2f}")
         
         loader_kwargs = {'pin_memory': True, 'num_workers': 4} if torch.cuda.is_available() else {}
         

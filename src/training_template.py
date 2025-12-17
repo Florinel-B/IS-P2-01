@@ -1241,7 +1241,7 @@ if __name__ == "__main__":
         print(f"Peso para clase positiva (base): {pos_weight_base:.2f}")
         print(f"Peso para clase positiva (ajustado x0.75 para recall): {pos_weight:.2f}")
         
-        loader_kwargs = {'pin_memory': True, 'num_workers': 4} if torch.cuda.is_available() else {}
+        loader_kwargs = {'pin_memory': torch.cuda.is_available(), 'num_workers': 0, 'persistent_workers': False} if torch.cuda.is_available() else {}
         
         if train_dataset.num_anomalies < 200:
             print("Aplicando Data Augmentation...")

@@ -706,7 +706,7 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
         optimizer,
         T_0=50,  # Efectivamente sin restarts tempranos
         T_mult=1,
-        eta_min=1e-4,
+        eta_min=1e-5,
         initial_lr=initial_lr
     )
     

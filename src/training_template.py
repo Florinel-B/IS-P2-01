@@ -1211,9 +1211,9 @@ if __name__ == "__main__":
         print(f"Anomalías en train: {train_dataset.num_anomalies}")
         
         pos_weight_base = train_dataset.get_class_weights()
-        pos_weight = pos_weight_base * 1.5  # Aumentar penalidad para falsos negativos (maximizar recall)
+        pos_weight = pos_weight_base * 1.2  # Aumentar penalidad para falsos negativos (maximizar recall)
         print(f"Peso para clase positiva (base): {pos_weight_base:.2f}")
-        print(f"Peso para clase positiva (ajustado x1.5 para recall): {pos_weight:.2f}")
+        print(f"Peso para clase positiva (ajustado x1.2 para recall): {pos_weight:.2f}")
         
         loader_kwargs = {'pin_memory': True, 'num_workers': 4} if torch.cuda.is_available() else {}
         
@@ -1238,8 +1238,8 @@ if __name__ == "__main__":
         # Ahora train_template retorna también el scheduler
         model, ca_scheduler = train_template(
             train_loader, model, val_loader, 
-            epochs=40, pos_weight=pos_weight, patience=15, device=DEVICE,
-            use_swa=True, swa_start=80  # SWA activado, comienza en epoch 100
+            epochs=400, pos_weight=pos_weight, patience=15, device=DEVICE,
+            use_swa=True, swa_start=120  # SWA activado, comienza en epoch 100
         )
         
         # Elegir umbral priorizando RECALL (detección de anomalías) sobre precisión

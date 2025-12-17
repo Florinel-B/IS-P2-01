@@ -312,6 +312,8 @@ class VoltageAnomalyModelStateful(nn.Module):
         # Estado oculto persistente (para inferencia online)
         self.hidden_state = None
 
+        self._init_weights()
+
     def forward(self, x, hidden=None):
         """
         Forward pass.
@@ -354,6 +356,30 @@ class VoltageAnomalyModelStateful(nn.Module):
         h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
         c0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
         return (h0, c0)
+
+    def _init_weights(self):
+        for name, param in self.lstm.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param)
+            elif 'bias' in name:
+                param.data.fill_(0)
+                hidden = self.hidden_size
+                param.data[hidden:2*hidden].fill_(1.0)
+
+        nn.init.xavier_uniform_(self.attention_weights.weight)
+        if self.attention_weights.bias is not None:
+            nn.init.zeros_(self.attention_weights.bias)
+
+        for m in self.classifier:
+            if isinstance(m, nn.Linear):
+                if m.out_features == 1:
+                    nn.init.xavier_uniform_(m.weight, gain=0.5)
+                else:
+                    nn.init.kaiming_uniform_(m.weight, nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
 
     def predict(self, x, hidden=None):
         """Wrapper para predicción con sigmoid."""
@@ -561,7 +587,7 @@ class CosineAnnealingLRWithRestarts:
     El LR sigue un patrón coseno que decae y se reinicia periódicamente,
     permitiendo escapar de mínimos locales.
     """
-    def __init__(self, optimizer, T_0=400, T_mult=1, eta_min=1e-6, initial_lr=0.075):
+    def __init__(self, optimizer, T_0=50, T_mult=1, eta_min=1e-6, initial_lr=0.075):
         """
         Args:
             optimizer: Optimizador de PyTorch
@@ -654,7 +680,7 @@ class CosineAnnealingLRWithRestarts:
 
 # --- 8. Entrenamiento con Cosine Annealing y SWA ---
 
-def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=1.0, patience=10, device=None, use_swa=True, swa_start=120):
+def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1.0, patience=10, device=None, use_swa=True, swa_start=120):
     """
     Entrenamiento con Cosine Annealing LR scheduler, SWA y soporte CUDA.
     
@@ -678,7 +704,7 @@ def train_template(train_loader, model, val_loader=None, epochs=400, pos_weight=
     # T_mult=2: cada ciclo siguiente dura el doble (20, 40, 80, ...)
     ca_scheduler = CosineAnnealingLRWithRestarts(
         optimizer,
-        T_0=400,  # Efectivamente sin restarts tempranos
+        T_0=50,  # Efectivamente sin restarts tempranos
         T_mult=1,
         eta_min=1e-7,
         initial_lr=initial_lr
@@ -1128,7 +1154,7 @@ def importar_modelo_portable(checkpoint_path, device=None):
         # Compatibilidad con versiones antiguas
         config = {
             'input_size': checkpoint['input_size'],
-            'hidden_size': 128,
+            'hidden_size': 192,
             'num_layers': 3,
             'dropout': 0.3
         }

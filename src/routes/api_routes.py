@@ -229,10 +229,16 @@ def init_routes(sistema, socketio):
             if max_points <= 0:
                 break
 
+            # Estado real por reglas (t): 0 normal, 1 salto voltaje, 2 hueco/cuelgue
+            real_state_t = 0
+            real_state_reason = "normal"
+
             if prev_time is not None:
                 # Incidencia por cuelgue (hueco temporal)
                 gap_seconds = (row['tiempo'] - prev_time).total_seconds()
                 if gap_seconds > HUECO_CUELGUE_SECONDS:
+                    real_state_t = 2
+                    real_state_reason = f"hueco_tiempo>{HUECO_CUELGUE_SECONDS}s"
                     msg_gap = f"\ud83d\udea8 CUELGUE/NO-DATOS: hueco de {gap_seconds/60:.1f} min sin registros"
                     sistema.registro.registrar_mensaje({
                         'tipo': 'CRITICAL',
@@ -268,6 +274,10 @@ def init_routes(sistema, socketio):
                 deltas = {k: abs(float(voltages[k]) - float(prev_voltages.get(k, 0.0))) for k in ['R1_a', 'R2_a', 'R1_b', 'R2_b']}
                 worst_channel, worst_delta = max(deltas.items(), key=lambda kv: kv[1])
                 if worst_delta >= SALTO_VOLTAGE_MV:
+                    # Si ya venía marcado como cuelgue por hueco de tiempo, lo dejamos como cuelgue.
+                    if real_state_t != 2:
+                        real_state_t = 1
+                        real_state_reason = f"salto_voltaje:{worst_channel}"
                     msg_jump = f"\ud83d\udd34 SALTO VOLTAJE: {worst_channel} \u0394={worst_delta:.0f} mV (\u2265 {SALTO_VOLTAGE_MV} mV)"
                     sistema.registro.registrar_mensaje({
                         'tipo': 'WARNING',
@@ -373,6 +383,8 @@ def init_routes(sistema, socketio):
             payload = {
                 'tiempo': row['tiempo'].isoformat(),
                 'status': status_val,
+                'real_state_t': int(real_state_t),
+                'real_state_reason': real_state_reason,
                 **voltages,
                 'prediccion_completa': pred,
                 'prediccion_actual': pred.get('prediccion_actual', 0),

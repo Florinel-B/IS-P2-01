@@ -402,7 +402,7 @@
                 </div>
             </div>
             <div style="margin-top: 15px;">
-                <p>Status: <span class="estado-badge" id="status-badge">Normal</span></p>
+                <p>Estado real (t): <span class="estado-badge" id="status-badge">Normal</span></p>
                 <p style="margin-top: 10px; font-size: 12px; color: #999;">
                     Último update: <span id="timestamp">---</span>
                 </p>
@@ -481,7 +481,7 @@
         let chartData = {
             labels: [],
             predictionData: [],
-            statusData: []
+            realStateData: []
         };
         
         let chart = null;
@@ -511,8 +511,8 @@
                             yAxisID: 'y'
                         },
                         {
-                            label: 'Status',
-                            data: chartData.statusData,
+                            label: 'Estado real (t)',
+                            data: chartData.realStateData,
                             borderColor: '#667eea',
                             backgroundColor: 'rgba(102, 126, 234, 0.1)',
                             tension: 0.3,
@@ -539,7 +539,7 @@
                             type: 'linear',
                             display: true,
                             position: 'right',
-                            title: { display: true, text: 'Status' },
+                            title: { display: true, text: 'Estado real (t) (0-2)' },
                             grid: { drawOnChartArea: false }
                         }
                     }
@@ -565,10 +565,12 @@
             document.getElementById('voltaje-r1b').textContent = (data.R1_b || 0).toFixed(1) + ' V';
             document.getElementById('voltaje-r2b').textContent = (data.R2_b || 0).toFixed(1) + ' V';
             
-            // Actualizar status
+            // Actualizar estado real (t) (por reglas, viene del backend)
             const statusBadge = document.getElementById('status-badge');
-            statusBadge.textContent = data.status === 1 ? 'Normal' : 'Desconectado';
-            statusBadge.className = 'estado-badge ' + (data.status === 1 ? 'badge-normal' : 'badge-anomalia');
+            const realState = Number(data.real_state_t ?? 0);
+            const realLabel = realState === 2 ? 'Cuelgue (real)' : realState === 1 ? 'Anomalía voltaje (real)' : 'Normal (real)';
+            statusBadge.textContent = realLabel;
+            statusBadge.className = 'estado-badge ' + (realState === 0 ? 'badge-normal' : realState === 1 ? 'badge-anomalia' : 'badge-cuelgue');
             
             // Actualizar timestamp (robusto)
             const rawTs = data.tiempo || data.timestamp || null;
@@ -579,19 +581,19 @@
             // Actualizar gráfica
             chartData.labels.push(hora);
             chartData.predictionData.push(data.prediccion_siguiente);
-            chartData.statusData.push(data.status);
+            chartData.realStateData.push(realState);
             
             // Limitar a últimos 100 puntos
             if (chartData.labels.length > 100) {
                 chartData.labels.shift();
                 chartData.predictionData.shift();
-                chartData.statusData.shift();
+                chartData.realStateData.shift();
             }
             
             if (chart) {
                 chart.data.labels = chartData.labels;
                 chart.data.datasets[0].data = chartData.predictionData;
-                chart.data.datasets[1].data = chartData.statusData;
+                chart.data.datasets[1].data = chartData.realStateData;
                 chart.update('none');
             }
             

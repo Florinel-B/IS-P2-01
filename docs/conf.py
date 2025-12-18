@@ -20,6 +20,10 @@ extensions = [
 # Enable autosummary generation
 autosummary_generate = True
 
+# When building on Read the Docs we often don't want to install heavy deps
+# such as torch; mock them so autodoc can import modules that reference them.
+autodoc_mock_imports = ['torch']
+
 # Prefer the Read the Docs theme when building on RTD or locally if installed
 try:
     import sphinx_rtd_theme

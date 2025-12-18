@@ -1,0 +1,22 @@
+# Read the Docs configuration for this repository
+# Generated/updated to match the project's environment and requirements
+version: 2
+
+build:
+  os: ubuntu-24.04
+  # Use the Python version matching the project's virtual environment (3.12)
+  tools:
+    python: "3.12"
+
+# Build settings for Sphinx — docs live in `docs/` and use `docs/conf.py`.
+sphinx:
+  configuration: docs/conf.py
+
+python:
+  # Install project requirements so docs can import the package, plus docs deps
+  install:
+    - requirements: requirements.txt
+    - requirements: docs/requirements.txt
+
+# If the project requires system packages (e.g. libsndfile, ffmpeg) to build
+# extensions for docs, add them here under `apt_packages`.

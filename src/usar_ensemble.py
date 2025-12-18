@@ -44,16 +44,33 @@ def predict_multiclass(
 
     # Inicializar detector
     print("\n2️⃣  Inicializando detector ensemble...")
-    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
+    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path, require_rf=False)
 
-    # Realizar predicciones con el modelo completo
+    # Realizar predicciones
     print("\n3️⃣  Realizando predicciones...")
-    results = detector.predict(df)
-
-    predictions = results["predictions"]
-    probabilities = results["probabilities"]
-    lstm_probs = results["lstm_probs"]
-    hang_labels = results["hang_labels"]
+    if detector.rf_model is not None:
+        results = detector.predict(df)
+        predictions = results["predictions"]
+        probabilities = results["probabilities"]
+        lstm_probs = results["lstm_probs"]
+        hang_labels = results["hang_labels"]
+    else:
+        print("   ⚠️  RF no disponible, usando fallback LSTM + heurística...")
+        # Fallback: usar solo LSTM + detección de cuelgues
+        lstm_probs, lstm_preds = detector.extract_lstm_features(df)
+        hang_labels = detector.detect_hangs(df)
+        
+        # Lógica heurística: si hay cuelgue, clase 2; sino, usar LSTM
+        predictions = np.where(hang_labels == 1, 2, lstm_preds)
+        
+        # Probabilidades heurísticas
+        probabilities = np.zeros((len(df), 3))
+        for i in range(len(df)):
+            if hang_labels[i] == 1:
+                probabilities[i] = [0.0, 0.0, 1.0]
+            else:
+                prob_anom = lstm_probs[i]
+                probabilities[i] = [1.0 - prob_anom, prob_anom, 0.0]
 
     # Crear DataFrame de resultados
     output_df = df[["tiempo"]].copy()

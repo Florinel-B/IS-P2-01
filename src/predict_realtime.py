@@ -24,7 +24,7 @@ class RealtimePredictor:
         Args:
             lstm_model_path: Path al modelo LSTM
         """
-        self.detector = EnsembleAnomalyDetector(lstm_model_path)
+        self.detector = EnsembleAnomalyDetector(lstm_model_path, require_rf=False)
         
         # Buffer para secuencias (necesario para LSTM)
         self.seq_len = self.detector.seq_len
@@ -34,7 +34,10 @@ class RealtimePredictor:
         print(f"✓ Predictor inicializado")
         print(f"   - LSTM threshold: {self.detector.lstm_threshold}")
         print(f"   - Sequence length: {self.seq_len}")
-        print(f"   - Modelo completo (RF + LSTM): ✓")
+        if self.detector.rf_model is not None:
+            print(f"   - Modelo completo (RF + LSTM): ✓")
+        else:
+            print(f"   - Solo LSTM (RF no disponible): ⚠️")
     
     def predict_single(
         self,
@@ -80,17 +83,33 @@ class RealtimePredictor:
             df_padding = pd.DataFrame(padding_rows)
             df_buffer = pd.concat([df_padding, df_buffer], ignore_index=True)
 
-        result = self.detector.predict(df_buffer)
+        if self.detector.rf_model is not None:
+            # Usar modelo completo
+            result = self.detector.predict(df_buffer)
+            idx = len(df_buffer) - 1
+            prediction = int(result["predictions"][idx])
+            probs_row = result["probabilities"][idx]
+            probs = probs_row.tolist() if hasattr(probs_row, "tolist") else list(probs_row)
+            hang_label = int(result["hang_labels"][idx]) if len(result["hang_labels"]) > idx else 0
+            lstm_prob = float(result["lstm_probs"][idx]) if len(result["lstm_probs"]) > idx else 0.0
+        else:
+            # Fallback: usar solo LSTM + detección de cuelgues
+            lstm_probs, lstm_preds = self.detector.extract_lstm_features(df_buffer)
+            hang_labels = self.detector.detect_hangs(df_buffer)
+            
+            idx = len(df_buffer) - 1
+            lstm_prob = float(lstm_probs[idx]) if len(lstm_probs) > idx else 0.0
+            lstm_pred = 1 if lstm_prob >= self.detector.lstm_threshold else 0
+            hang_label = int(hang_labels[idx]) if len(hang_labels) > idx else 0
+            
+            # Lógica heurística: si hay cuelgue, clase 2; sino, usar LSTM
+            if hang_label == 1:
+                prediction = 2
+                probs = [0.0, 0.0, 1.0]  # 100% cuelgue
+            else:
+                prediction = lstm_pred
+                probs = [1.0 - lstm_prob, lstm_prob, 0.0]  # Normal o anomalía
 
-        # Tomar la predicción del último elemento (el que acabamos de agregar)
-        idx = len(df_buffer) - 1
-        prediction = int(result["predictions"][idx])
-
-        probs_row = result["probabilities"][idx]
-        probs = probs_row.tolist() if hasattr(probs_row, "tolist") else list(probs_row)
-
-        hang_label = int(result["hang_labels"][idx]) if len(result["hang_labels"]) > idx else 0
-        lstm_prob = float(result["lstm_probs"][idx]) if len(result["lstm_probs"]) > idx else 0.0
         lstm_pred = 1 if lstm_prob >= self.detector.lstm_threshold else 0
         confianza = float(max(probs)) if len(probs) else 0.0
         

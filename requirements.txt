@@ -5,3 +5,4 @@ torch
 matplotlib
 scikit-learn
 Flask-SocketIO
+Flask, numpy, pandas, torch

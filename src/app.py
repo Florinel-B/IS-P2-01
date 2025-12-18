@@ -2,7 +2,7 @@ from flask import Flask
 from flask_socketio import SocketIO
 import secrets
 
-# Importar modelos
+# Importar modelos (imports relativos para que funcione como paquete `src`)
 from model.sysGestion import SistemaGestion
 
 # Importar inicializadores de rutas

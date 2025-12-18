@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import pickle
 
 
 def cargar_y_agrupar_dataset(ruta_csv: str):
@@ -36,3 +37,18 @@ def cargar_y_agrupar_dataset(ruta_csv: str):
     df_final = pd.DataFrame(datos)
     df_final = df_final.sort_values(by=["id", "tiempo"]).reset_index(drop=True)
     return df_final
+
+def leer_datos_procesados(ruta_pkl: str):
+    
+    with open(ruta_pkl, 'rb') as f:
+        datos = pickle.load(f)
+
+    df = pd.DataFrame(datos)
+    df['tiempo'] = pd.to_datetime(df['tiempo'])
+    print (df.sort_values('tiempo').reset_index(drop=True))
+    return df.sort_values('tiempo').reset_index(drop=True)
+
+if __name__ == "__main__":
+    ruta_pkl = 'datos_procesados.pkl'
+
+    leer_datos_procesados(ruta_pkl)

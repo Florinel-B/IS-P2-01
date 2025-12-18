@@ -1,0 +1,765 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard - Predicción Anticipada {{ user_id }}</title>
+    <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1a1a2e;
+            color: #eee;
+            padding: 20px;
+        }
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 25px;
+            border-radius: 12px;
+            margin-bottom: 25px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+        }
+        .header h1 {
+            font-size: 28px;
+            font-weight: 600;
+        }
+        .header .info {
+            font-size: 14px;
+            opacity: 0.9;
+        }
+        .header-controls {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .btn {
+            padding: 10px 20px;
+            border: none;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .btn-primary {
+            background: #fff;
+            color: #667eea;
+        }
+        .btn-primary:hover {
+            background: #f0f0f0;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #c82333;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        }
+        .btn-danger:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .speed-control {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            background: rgba(255,255,255,0.1);
+            padding: 8px 15px;
+            border-radius: 6px;
+        }
+        .speed-control label {
+            font-size: 13px;
+        }
+        .speed-control input {
+            width: 60px;
+            padding: 5px;
+            border: none;
+            border-radius: 4px;
+            background: rgba(255,255,255,0.2);
+            color: white;
+            text-align: center;
+        }
+        .speed-control input::placeholder {
+            color: rgba(255,255,255,0.5);
+        }
+        .container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }
+        .panel {
+            background: #262641;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+            border: 1px solid #3a3f5c;
+        }
+        .panel.full {
+            grid-column: 1 / -1;
+        }
+        .panel h2 {
+            margin-bottom: 15px;
+            color: #667eea;
+            font-size: 18px;
+            font-weight: 600;
+        }
+        
+        /* PREDICCIÓN ACTUAL Y SIGUIENTE */
+        .predicciones-container {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .prediccion-card {
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid;
+        }
+        
+        .prediccion-card.actual {
+            background: rgba(100, 150, 200, 0.1);
+            border-left-color: #4a9eff;
+        }
+        
+        .prediccion-card.siguiente {
+            background: rgba(255, 200, 0, 0.1);
+            border-left-color: #ffcc00;
+            font-weight: bold;
+        }
+        
+        .prediccion-label {
+            font-size: 12px;
+            color: #999;
+            margin-bottom: 5px;
+            text-transform: uppercase;
+        }
+        
+        .prediccion-clase {
+            font-size: 18px;
+            color: #fff;
+            margin-bottom: 8px;
+        }
+        
+        .prediccion-confianza {
+            font-size: 12px;
+            color: #ccc;
+        }
+        
+        /* ALERTA PREVENTIVA */
+        .alerta-preventiva {
+            background: linear-gradient(135deg, #ff6b6b 0%, #ff5252 100%);
+            border: 2px solid #ff4444;
+            padding: 15px;
+            border-radius: 8px;
+            margin: 15px 0;
+            animation: pulse 2s infinite;
+        }
+        
+        .alerta-preventiva.activa {
+            display: block;
+        }
+        
+        .alerta-preventiva.inactiva {
+            display: none;
+        }
+        
+        .alerta-titulo {
+            font-size: 16px;
+            font-weight: bold;
+            color: white;
+            margin-bottom: 8px;
+        }
+        
+        .alerta-mensaje {
+            font-size: 14px;
+            color: white;
+        }
+        
+        @keyframes pulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(255, 107, 107, 0.7); }
+            50% { box-shadow: 0 0 0 10px rgba(255, 107, 107, 0); }
+        }
+        
+        #chartCanvas {
+            max-height: 400px;
+        }
+        
+        .notificaciones {
+            max-height: 500px;
+            overflow-y: auto;
+            background: #1a1a2e;
+            padding: 15px;
+            border-radius: 8px;
+        }
+        
+        .notificacion {
+            padding: 12px;
+            margin-bottom: 10px;
+            border-left: 4px solid #3498db;
+            background: rgba(52, 152, 219, 0.1);
+            border-radius: 4px;
+            font-size: 13px;
+            word-break: break-word;
+        }
+        
+        .notificacion.WARNING {
+            border-left-color: #f39c12;
+            background: rgba(243, 156, 18, 0.1);
+        }
+        
+        .notificacion.ERROR {
+            border-left-color: #e74c3c;
+            background: rgba(231, 76, 60, 0.1);
+        }
+        
+        .notificacion.CRITICAL {
+            border-left-color: #c0392b;
+            background: rgba(192, 57, 43, 0.15);
+            font-weight: bold;
+            animation: alert-blink 1s infinite;
+        }
+        
+        .notificacion.PREVENTIVA {
+            border-left-color: #ff9800;
+            background: rgba(255, 152, 0, 0.1);
+            font-weight: bold;
+        }
+        
+        @keyframes alert-blink {
+            0%, 50%, 100% { opacity: 1; }
+            25%, 75% { opacity: 0.8; }
+        }
+        
+        .timestamp {
+            font-size: 11px;
+            color: #888;
+            margin-top: 5px;
+        }
+        
+        .voltaje-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            margin: 15px 0;
+        }
+        
+        .voltaje-item {
+            padding: 10px;
+            background: rgba(100, 200, 100, 0.1);
+            border-radius: 4px;
+            font-size: 12px;
+        }
+        
+        .voltaje-label {
+            color: #888;
+        }
+        
+        .voltaje-valor {
+            color: #fff;
+            font-weight: bold;
+        }
+        
+        .estado-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+        
+        .badge-normal {
+            background: #28a745;
+            color: white;
+        }
+        
+        .badge-anomalia {
+            background: #ffc107;
+            color: black;
+        }
+        
+        .badge-cuelgue {
+            background: #dc3545;
+            color: white;
+        }
+        
+        /* Scrollbar personalizada */
+        ::-webkit-scrollbar {
+            width: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: rgba(0,0,0,0.1);
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb {
+            background: #667eea;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background: #764ba2;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div>
+            <h1>🚀 Dashboard Inteligente - Predicción Anticipada</h1>
+            <div class="info">Usuario: <strong>{{ user_id }}</strong></div>
+        </div>
+        <div class="header-controls">
+            <div class="speed-control">
+                <label for="speed-input">Velocidad:</label>
+                <input type="number" id="speed-input" placeholder="100" value="100" min="1" max="1000">
+            </div>
+            <button class="btn btn-primary" id="btn-iniciar" onclick="iniciarSimulacion()">
+                ▶️ Iniciar Simulación
+            </button>
+            <button class="btn btn-danger" id="btn-detener" onclick="detenerSimulacion()" disabled>
+                ⏹️ Detener
+            </button>
+        </div>
+    </div>
+
+    <div class="container">
+        <!-- PREDICCIONES ACTUAL Y SIGUIENTE -->
+        <div class="panel full">
+            <h2>📊 Predicciones (Estado Actual vs Siguiente)</h2>
+            
+            <div class="predicciones-container">
+                <div class="prediccion-card actual">
+                    <div class="prediccion-label">Estado Actual (t)</div>
+                    <div class="prediccion-clase" id="clase-actual">---</div>
+                    <div class="prediccion-confianza">
+                        Confianza: <span id="confianza-actual">0%</span>
+                    </div>
+                </div>
+                
+                <div class="prediccion-card siguiente">
+                    <div class="prediccion-label">🔮 Estado Siguiente (t+1)</div>
+                    <div class="prediccion-clase" id="clase-siguiente">---</div>
+                    <div class="prediccion-confianza">
+                        Confianza: <span id="confianza-siguiente">0%</span>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- ALERTA PREVENTIVA -->
+            <div class="alerta-preventiva inactiva" id="alerta-preventiva">
+                <div class="alerta-titulo">⚠️  ALERTA PREVENTIVA</div>
+                <div class="alerta-mensaje" id="alerta-mensaje">Cambio anticipado detectado</div>
+            </div>
+        </div>
+
+        <!-- GRÁFICA EN TIEMPO REAL -->
+        <div class="panel full">
+            <h2>📈 Gráfica de Predicciones en Tiempo Real</h2>
+            <canvas id="chartCanvas"></canvas>
+        </div>
+
+        <!-- VOLTAJES ACTUALES -->
+        <div class="panel">
+            <h2>⚡ Voltajes Actuales</h2>
+            <div class="voltaje-info">
+                <div class="voltaje-item">
+                    <div class="voltaje-label">R1_a</div>
+                    <div class="voltaje-valor" id="voltaje-r1a">0 V</div>
+                </div>
+                <div class="voltaje-item">
+                    <div class="voltaje-label">R2_a</div>
+                    <div class="voltaje-valor" id="voltaje-r2a">0 V</div>
+                </div>
+                <div class="voltaje-item">
+                    <div class="voltaje-label">R1_b</div>
+                    <div class="voltaje-valor" id="voltaje-r1b">0 V</div>
+                </div>
+                <div class="voltaje-item">
+                    <div class="voltaje-label">R2_b</div>
+                    <div class="voltaje-valor" id="voltaje-r2b">0 V</div>
+                </div>
+            </div>
+            <div style="margin-top: 15px;">
+                <p>Estado real (t): <span class="estado-badge" id="status-badge">Normal</span></p>
+                <p style="margin-top: 10px; font-size: 12px; color: #999;">
+                    Último update: <span id="timestamp">---</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- ESTADÍSTICAS -->
+        <div class="panel">
+            <h2>📊 Estadísticas</h2>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px;">
+                <div style="padding: 10px; background: rgba(40, 167, 69, 0.1); border-radius: 4px;">
+                    <div style="font-size: 12px; color: #888;">Predicciones Normal</div>
+                    <div style="font-size: 20px; color: #28a745; font-weight: bold;">
+                        <span id="count-normal">0</span>
+                    </div>
+                </div>
+                <div style="padding: 10px; background: rgba(255, 193, 7, 0.1); border-radius: 4px;">
+                    <div style="font-size: 12px; color: #888;">Anomalías Detectadas</div>
+                    <div style="font-size: 20px; color: #ffc107; font-weight: bold;">
+                        <span id="count-anomalia">0</span>
+                    </div>
+                </div>
+                <div style="padding: 10px; background: rgba(220, 53, 69, 0.1); border-radius: 4px;">
+                    <div style="font-size: 12px; color: #888;">Cuelgues Detectados</div>
+                    <div style="font-size: 20px; color: #dc3545; font-weight: bold;">
+                        <span id="count-cuelgue">0</span>
+                    </div>
+                </div>
+                <div style="padding: 10px; background: rgba(255, 152, 0, 0.1); border-radius: 4px;">
+                    <div style="font-size: 12px; color: #888;">Alertas Preventivas</div>
+                    <div style="font-size: 20px; color: #ff9800; font-weight: bold;">
+                        <span id="count-preventiva">0</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- NOTIFICACIONES -->
+        <div class="panel full">
+            <h2>🔔 Notificaciones y Alertas</h2>
+            <div class="notificaciones" id="notificaciones-container">
+                <div class="notificacion" style="color: #999;">
+                    Esperando notificaciones...
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        
+        // Variables de control
+        let simulacionActiva = false;
+        
+        // Contadores
+        // Nota: aquí contamos tanto la predicción del modelo (t+1) como la verificación real por reglas.
+        let stats = {
+            // Predicción del modelo (t+1)
+            normal: 0,
+            anomalia: 0,
+            cuelgue: 0,
+            preventiva: 0,
+
+            // Verificación real (reglas)
+            realSaltosVoltaje: 0,
+            realHuecosTiempo: 0
+        };
+
+        // Historial mínimo para verificación real
+        let lastVoltages = null;
+        let lastTime = null;
+        const UMBRAL_SALTO_MV = 500;
+        const UMBRAL_HUECO_S = 120;
+        
+        // Datos para la gráfica
+        let chartData = {
+            labels: [],
+            predictionData: [],
+            realStateData: []
+        };
+        
+        let chart = null;
+        
+        // CONECTAR A LA ROOM
+        socket.on('connect', () => {
+            console.log('✓ WebSocket conectado');
+            const userId = '{{ user_id }}' || 'USER1';
+            socket.emit('join', { user_id: userId });
+            console.log('✓ Unido a room:', userId);
+        });
+        
+        function initChart() {
+            const ctx = document.getElementById('chartCanvas').getContext('2d');
+            chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: chartData.labels,
+                    datasets: [
+                        {
+                            label: 'Predicción Siguiente',
+                            data: chartData.predictionData,
+                            borderColor: '#ff9800',
+                            backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                            tension: 0.3,
+                            fill: true,
+                            yAxisID: 'y'
+                        },
+                        {
+                            label: 'Estado real (t)',
+                            data: chartData.realStateData,
+                            borderColor: '#667eea',
+                            backgroundColor: 'rgba(102, 126, 234, 0.1)',
+                            tension: 0.3,
+                            fill: false,
+                            yAxisID: 'y1'
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    interaction: {
+                        mode: 'index',
+                        intersect: false
+                    },
+                    scales: {
+                        y: {
+                            type: 'linear',
+                            display: true,
+                            position: 'left',
+                            title: { display: true, text: 'Predicción (0-2)' }
+                        },
+                        y1: {
+                            type: 'linear',
+                            display: true,
+                            position: 'right',
+                            title: { display: true, text: 'Estado real (t) (0-2)' },
+                            grid: { drawOnChartArea: false }
+                        }
+                    }
+                }
+            });
+        }
+        
+        socket.on('dato_voltaje', (data) => {
+            // Actualizar predicciones
+            const claseActual = data.clase_actual || 'Desconocido';
+            const claseSiguiente = data.clase_siguiente || 'Desconocido';
+            const confianzaActual = (data.confianza_actual * 100).toFixed(1);
+            const confianzaSiguiente = (data.confianza_siguiente * 100).toFixed(1);
+            
+            document.getElementById('clase-actual').textContent = claseActual;
+            document.getElementById('clase-siguiente').textContent = claseSiguiente;
+            document.getElementById('confianza-actual').textContent = confianzaActual + '%';
+            document.getElementById('confianza-siguiente').textContent = confianzaSiguiente + '%';
+            
+            // Actualizar voltajes
+            document.getElementById('voltaje-r1a').textContent = (data.R1_a || 0).toFixed(1) + ' V';
+            document.getElementById('voltaje-r2a').textContent = (data.R2_a || 0).toFixed(1) + ' V';
+            document.getElementById('voltaje-r1b').textContent = (data.R1_b || 0).toFixed(1) + ' V';
+            document.getElementById('voltaje-r2b').textContent = (data.R2_b || 0).toFixed(1) + ' V';
+            
+            // Actualizar estado real (t) (por reglas, viene del backend)
+            const statusBadge = document.getElementById('status-badge');
+            const realState = Number(data.real_state_t ?? 0);
+            const realLabel = realState === 2 ? 'Cuelgue (real)' : realState === 1 ? 'Anomalía voltaje (real)' : 'Normal (real)';
+            statusBadge.textContent = realLabel;
+            statusBadge.className = 'estado-badge ' + (realState === 0 ? 'badge-normal' : realState === 1 ? 'badge-anomalia' : 'badge-cuelgue');
+            
+            // Actualizar timestamp (robusto)
+            const rawTs = data.tiempo || data.timestamp || null;
+            const fecha = rawTs ? new Date(rawTs) : null;
+            const hora = (fecha && !isNaN(fecha.getTime())) ? fecha.toLocaleTimeString('es-ES') : '---';
+            document.getElementById('timestamp').textContent = hora;
+            
+            // Actualizar gráfica
+            chartData.labels.push(hora);
+            chartData.predictionData.push(data.prediccion_siguiente);
+            chartData.realStateData.push(realState);
+            
+            // Limitar a últimos 100 puntos
+            if (chartData.labels.length > 100) {
+                chartData.labels.shift();
+                chartData.predictionData.shift();
+                chartData.realStateData.shift();
+            }
+            
+            if (chart) {
+                chart.data.labels = chartData.labels;
+                chart.data.datasets[0].data = chartData.predictionData;
+                chart.data.datasets[1].data = chartData.realStateData;
+                chart.update('none');
+            }
+            
+            // Alerta preventiva
+            const alertaDiv = document.getElementById('alerta-preventiva');
+            if (data.alerta_preventiva) {
+                alertaDiv.classList.remove('inactiva');
+                alertaDiv.classList.add('activa');
+                document.getElementById('alerta-mensaje').textContent = 
+                    `Cambio anticipado: ${claseActual} → ${claseSiguiente}`;
+                stats.preventiva++;
+                document.getElementById('count-preventiva').textContent = stats.preventiva;
+            } else {
+                alertaDiv.classList.remove('activa');
+                alertaDiv.classList.add('inactiva');
+            }
+            
+            // Contar por tipo
+            if (data.prediccion_siguiente === 0) stats.normal++;
+            if (data.prediccion_siguiente === 1) stats.anomalia++;
+            if (data.prediccion_siguiente === 2) stats.cuelgue++;
+
+            // Verificación real independiente del modelo:
+            // (1) salto >=500mV entre muestras consecutivas
+            const currentVoltages = {
+                R1_a: Number(data.R1_a ?? 0),
+                R2_a: Number(data.R2_a ?? 0),
+                R1_b: Number(data.R1_b ?? 0),
+                R2_b: Number(data.R2_b ?? 0)
+            };
+            if (lastVoltages) {
+                const deltas = {
+                    R1_a: Math.abs(currentVoltages.R1_a - lastVoltages.R1_a),
+                    R2_a: Math.abs(currentVoltages.R2_a - lastVoltages.R2_a),
+                    R1_b: Math.abs(currentVoltages.R1_b - lastVoltages.R1_b),
+                    R2_b: Math.abs(currentVoltages.R2_b - lastVoltages.R2_b)
+                };
+                const entries = Object.entries(deltas).sort((a, b) => b[1] - a[1]);
+                const worst = entries.length ? entries[0] : null;
+                if (worst && worst[1] >= UMBRAL_SALTO_MV) {
+                    stats.realSaltosVoltaje++;
+                }
+            }
+
+            // (2) hueco de tiempo >120s
+            if (fecha && !isNaN(fecha.getTime()) && lastTime) {
+                const gapSeconds = (fecha.getTime() - lastTime.getTime()) / 1000;
+                if (gapSeconds > UMBRAL_HUECO_S) {
+                    stats.realHuecosTiempo++;
+                }
+            }
+
+            lastVoltages = currentVoltages;
+            if (fecha && !isNaN(fecha.getTime())) lastTime = fecha;
+            
+            document.getElementById('count-normal').textContent = stats.normal;
+            document.getElementById('count-anomalia').textContent = stats.anomalia;
+            document.getElementById('count-cuelgue').textContent = stats.cuelgue;
+        });
+        
+        socket.on('notificacion_incidencia', (data) => {
+            const container = document.getElementById('notificaciones-container');
+            
+            // Limpiar mensaje inicial
+            if (container.children[0]?.textContent === 'Esperando notificaciones...') {
+                container.innerHTML = '';
+            }
+            
+            const notif = document.createElement('div');
+            notif.className = 'notificacion';
+            
+            if (data.alerta_preventiva) {
+                notif.classList.add('PREVENTIVA');
+            } else if (data.tipo === 2) {
+                notif.classList.add('CRITICAL');
+            } else if (data.tipo === 1) {
+                notif.classList.add('WARNING');
+            }
+            
+            const rawTs = data.tiempo || data.timestamp || null;
+            const fecha = rawTs ? new Date(rawTs) : null;
+            const fechaStr = (fecha && !isNaN(fecha.getTime())) ? fecha.toLocaleString('es-ES') : '';
+            const regla = data.regla ? ` [${data.regla}]` : '';
+            notif.innerHTML = `
+                <div style="font-weight: bold;">${data.mensaje}${regla}</div>
+                <div class="timestamp">${fechaStr}</div>
+            `;
+            
+            container.insertBefore(notif, container.firstChild);
+            
+            // Mantener solo últimas 50 notificaciones
+            while (container.children.length > 50) {
+                container.removeChild(container.lastChild);
+            }
+        });
+        
+        socket.on('connect', () => {
+            console.log('✓ Conectado al servidor');
+        });
+        
+        // Función para iniciar simulación
+        function iniciarSimulacion() {
+            const speed = document.getElementById('speed-input').value || 100;
+            const userId = '{{ user_id }}' || 'USER1';
+            
+            console.log('Iniciando simulación...', { speed, userId });
+            
+            fetch('/api/simulacion/iniciar', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: userId,
+                    speed: parseFloat(speed),
+                    id: 7,
+                    prediction_mode: 'batch'
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                console.log('✓ Simulación iniciada:', data);
+                if (data.success) {
+                    document.getElementById('btn-iniciar').disabled = true;
+                    document.getElementById('btn-detener').disabled = false;
+                } else {
+                    alert('Error: ' + (data.error || 'Desconocido'));
+                }
+            })
+            .catch(err => {
+                console.error('Error iniciando simulación:', err);
+                alert('Error al iniciar simulación: ' + err.message);
+            });
+        }
+        
+        // Función para detener simulación
+        function detenerSimulacion() {
+            const userId = '{{ user_id }}' || 'USER1';
+            
+            console.log('Deteniendo simulación...');
+            
+            fetch('/api/simulacion/detener', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    user_id: userId
+                })
+            })
+            .then(res => res.json())
+            .then(data => {
+                console.log('✓ Simulación detenida:', data);
+                if (data.success) {
+                    document.getElementById('btn-iniciar').disabled = false;
+                    document.getElementById('btn-detener').disabled = true;
+                }
+            })
+            .catch(err => {
+                console.error('Error deteniendo simulación:', err);
+                alert('Error al detener simulación: ' + err.message);
+            });
+        }
+        
+        // Inicializar gráfica
+        initChart();
+    </script>
+</body>
+</html>

@@ -1,9 +1,3 @@
 sphinx
 sphinx_rtd_theme
 alabaster
-sphinxcontrib-napoleonsphinx
-sphinx_rtd_theme
-alabaster
-sphinxcontrib-napoleonsphinx
-alabaster
-napoleon

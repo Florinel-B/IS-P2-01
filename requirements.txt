@@ -4,4 +4,5 @@ pandas
 torch
 matplotlib
 scikit-learn
+Flask-SocketIO
 Flask-SocketIOFlask, numpy, pandas, torch, matplotlib, pickle, sklearn, Flask_socketio ;

@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader
 from training_template import VoltageDropDataset, importar_modelo_portable
 
 
-MODEL_PATH = "modelo_anomalias.pth"
+MODEL_PATH = "modelo_anomalias_finetuned.pth"
 DATA_PATH = "datos_procesados.pkl"
 BATCH_SIZE = 32
 

@@ -213,7 +213,7 @@ class VoltageDropDataset(Dataset):
         return history_features
 
     def __len__(self):
-        return max(0, len(self.features) - self.seq_len)
+        return max(0, len(self.features) - self.seq_len + 1)
 
     def __getitem__(self, idx):
         # Secuencia de entrada: ventana temporal completa
@@ -733,12 +733,12 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
 
     for epoch in range(epochs):
         total_loss = 0
-        for X_batch, y_batch in train_loader:
-            X_batch = X_batch.to(device)
+        for x_batch, y_batch in train_loader:
+            x_batch = x_batch.to(device)
             y_batch = y_batch.to(device)
             
             optimizer.zero_grad()
-            logits, _ = model(X_batch)  # Ahora retorna logits
+            logits, _ = model(x_batch)  # Ahora retorna logits
             
             loss = criterion(logits, y_batch)  # BCEWithLogitsLoss
             
@@ -776,15 +776,15 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
             val_batch_count = 0
             
             with torch.no_grad():
-                for X_batch, y_batch in val_loader:
-                    X_batch = X_batch.to(device)
+                for x_batch, y_batch in val_loader:
+                    x_batch = x_batch.to(device)
                     y_batch = y_batch.to(device)
                     
-                    probs, _ = model.predict(X_batch) 
+                    probs, _ = model.predict(x_batch) 
                     preds = (probs >= 0.5).float()
                     
                     # Loss de validación
-                    logits, _ = model(X_batch)
+                    logits, _ = model(x_batch)
                     val_loss_sum += criterion(logits, y_batch).item()
                     val_batch_count += 1
                     
@@ -844,9 +844,9 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
         swa_model.eval()
         swa_preds, swa_labels = [], []
         with torch.no_grad():
-            for X_batch, y_batch in val_loader:
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                probs, _ = swa_model.module.predict(X_batch)
+            for x_batch, y_batch in val_loader:
+                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+                probs, _ = swa_model.module.predict(x_batch)
                 preds = (probs >= 0.5).float()
                 swa_preds.extend(preds.cpu().numpy().flatten())
                 swa_labels.extend(y_batch.cpu().numpy().flatten())
@@ -885,10 +885,10 @@ def encontrar_umbral_optimo(model, val_loader, device=None):
     all_labels = []
     
     with torch.no_grad():
-        for X_batch, y_batch in val_loader:
-            X_batch = X_batch.to(device)
+        for x_batch, y_batch in val_loader:
+            x_batch = x_batch.to(device)
             
-            probs, _ = model(X_batch)
+            probs, _ = model(x_batch)
             all_probs.extend(probs.cpu().numpy().flatten())
             all_labels.extend(y_batch.numpy().flatten())
     
@@ -928,9 +928,9 @@ def encontrar_umbral_por_precision(model, val_loader, target_precision=0.70, dev
     all_labels = []
 
     with torch.no_grad():
-        for X_batch, y_batch in val_loader:
-            X_batch = X_batch.to(device)
-            probs, _ = model.predict(X_batch)
+        for x_batch, y_batch in val_loader:
+            x_batch = x_batch.to(device)
+            probs, _ = model.predict(x_batch)
             all_probs.extend(probs.cpu().numpy().flatten())
             all_labels.extend(y_batch.numpy().flatten())
 
@@ -982,10 +982,10 @@ def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
     print("="*70)
     
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
-            X_batch = X_batch.to(device)
+        for x_batch, y_batch in test_loader:
+            x_batch = x_batch.to(device)
             
-            probs, _ = model.predict(X_batch)  # Usar predict() que aplica sigmoid
+            probs, _ = model.predict(x_batch)  # Usar predict() que aplica sigmoid
             preds = (probs >= threshold).float()
             
             all_probs.extend(probs.cpu().numpy().flatten())
@@ -1211,8 +1211,8 @@ if __name__ == "__main__":
         num_anomalies = analizar_datos(df)
 
         # División temporal
-        train_idx = int(len(df) * 0.70)
-        val_idx = int(len(df) * 0.85)
+        train_idx = int(len(df) * 0.80)
+        val_idx = int(len(df) * 0.95)
         
         train_df = df.iloc[:train_idx].copy()
         val_df = df.iloc[train_idx:val_idx].copy()

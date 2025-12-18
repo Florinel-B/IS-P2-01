@@ -1,1 +1,7 @@
-Flask, numpy, pandas, torch, matplotlib, pickle, sklearn, Flask_socketio ;
+Flask>=2.0
+numpy
+pandas
+torch
+matplotlib
+scikit-learn
+Flask-SocketIOFlask, numpy, pandas, torch, matplotlib, pickle, sklearn, Flask_socketio ;

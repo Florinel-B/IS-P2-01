@@ -211,6 +211,10 @@ def train_ensemble(
     joblib.dump(results, "ensemble_test_results.pkl")
     print(f"   ✓ Resultados guardados en ensemble_test_results.pkl")
 
+    # Guardar modelo completo
+    print("\n8️⃣  Guardando modelo completo...")
+    detector.save_complete_model("modelo_ensemble_completo.pkl")
+
     print("\n" + "="*70)
     print("✅ ENSEMBLE ENTRENADO Y EVALUADO")
     print("="*70)
@@ -218,6 +222,7 @@ def train_ensemble(
     print(f"   - Random Forest: modelo_ensemble_rf.pkl")
     print(f"   - Scaler: modelo_ensemble_rf_scaler.pkl")
     print(f"   - LSTM (original): {lstm_model_path}")
+    print(f"   - Modelo completo: modelo_ensemble_completo.pkl ⭐")
 
 
 if __name__ == "__main__":

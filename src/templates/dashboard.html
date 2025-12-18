@@ -291,9 +291,9 @@
                         ticks: {
                             stepSize: 1,
                             callback: function(value) {
-                                if (value === 1) return 'Normal';
-                                if (value === 0) return 'Anomalía';
-                                if (value === 2) return 'Bloqueo/Cuelgue';
+                                if (value === 0) return 'Normal';
+                                if (value === 1) return 'Anomalía';
+                                if (value === 2) return 'Cuelgue';
                                 return '';
                             }
                         }
@@ -426,8 +426,8 @@
             }
             chart.update('none');
 
-            // Calcular Estado Real (codificación: 1 Normal, 0 Anomalía, 2 Bloqueo)
-            let estadoReal = 1; // Normal por defecto
+            // Calcular Estado Real (codificación unificada: 0 Normal, 1 Anomalía, 2 Cuelgue)
+            let estadoReal = 0; // Normal por defecto
             
             // 1. Anomalía: Salto > 500mV en cualquier canal
             if (lastVoltages) {
@@ -437,7 +437,7 @@
                 const dR2b = Math.abs(payload.R2_b - lastVoltages.R2_b);
                 
                 if (dR1a > 500 || dR2a > 500 || dR1b > 500 || dR2b > 500) {
-                    estadoReal = 0;
+                    estadoReal = 1;
                 }
             }
 
@@ -466,14 +466,11 @@
             if (payload.pred_lstm !== undefined) ultimaPrediccionLSTM = payload.pred_lstm;
             if (payload.pred_rf !== undefined) ultimaPrediccionRF = payload.pred_rf;
 
-            // Mostrar info (si viene el objeto completo)
-            if (payload.prediccion) {
-                const p = payload.prediccion;
+            // Mostrar info de predicción (0 normal, 1 anomalía, 2 cuelgue)
+            {
                 const predInfo = document.getElementById('predInfo');
-                const predClase = p.clase || p.prediccion || 0;
-
-                predInfo.textContent = `Predicción: ${predClase} (confianza ${(p.confianza*100).toFixed(1)}%)`;
-
+                const predClase = Number(payload.pred ?? 0);
+                predInfo.textContent = `Predicción (t+1): ${predClase}`;
                 if (predClase === 0) predInfo.style.color = '#27ae60';
                 else if (predClase === 1) predInfo.style.color = '#e67e22';
                 else predInfo.style.color = '#e74c3c';
@@ -484,7 +481,10 @@
             const container = document.getElementById('notificaciones');
             const div = document.createElement('div');
             div.className = 'notificacion ' + (data.tipo === 2 ? 'CRITICAL' : 'WARNING');
-            const hora = new Date(data.tiempo).toLocaleTimeString();
+            // Backend envía 'tiempo' (ISO) y/o 'timestamp' (ISO). Fallback seguro.
+            const rawTs = data.tiempo || data.timestamp || null;
+            const fecha = rawTs ? new Date(rawTs) : null;
+            const hora = (fecha && !isNaN(fecha.getTime())) ? fecha.toLocaleTimeString() : '';
             div.innerHTML = `
                 <div class="timestamp">${hora}</div>
                 <span class="tipo">${data.tipo === 2 ? 'CUELGUE' : 'ANOMALÍA'}</span>

@@ -44,36 +44,39 @@ def predict_multiclass(
 
     # Inicializar detector
     print("\n2️⃣  Inicializando detector ensemble...")
-    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
+    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path, require_rf=False)
 
-    # Realizar predicciones con el modelo completo
-    print("\n3️⃣  Realizando predicciones...")
-    results = detector.predict(df)
+    # Realizar predicciones ANTICIPADAS (siguiente estado)
+    print("\n3️⃣  Realizando predicciones anticipadas...")
+    results = detector.predict_next_state(df, forecast_minutes=1)
 
-    predictions = results["predictions"]
-    probabilities = results["probabilities"]
-    lstm_probs = results["lstm_probs"]
-    hang_labels = results["hang_labels"]
+    predictions_current = results["predictions_current"]
+    predictions_future = results["predictions_future"]
+    probabilities_current = results["probabilities_current"]
+    probabilities_future = results["probabilities_future"]
+    alerta_preventiva = results["alerta_preventiva"]
 
     # Crear DataFrame de resultados
     output_df = df[["tiempo"]].copy()
-    output_df["prediccion"] = predictions
-    output_df["clase"] = detector.get_classification_names(predictions)
-
-    # Agregar probabilidades por clase
-    # Asegurar que probabilities tiene shape (n, 3)
-    assert probabilities.shape[1] == 3, f"Probabilities debe tener 3 columnas, tiene {probabilities.shape[1]}"
     
-    output_df["prob_normal"] = probabilities[:, 0]
-    output_df["prob_anomalia_voltaje"] = probabilities[:, 1]
-    output_df["prob_cuelgue"] = probabilities[:, 2]
-
-    # Confianza (máx probabilidad)
-    output_df["confianza"] = np.max(probabilities, axis=1)
-
-    # Features adicionales
-    output_df["lstm_probabilidad"] = lstm_probs
-    output_df["cuelgue_detectado"] = hang_labels
+    # Predicción ACTUAL
+    output_df["prediccion_actual"] = predictions_current
+    output_df["clase_actual"] = detector.get_classification_names(predictions_current)
+    output_df["prob_normal_actual"] = probabilities_current[:, 0]
+    output_df["prob_anomalia_voltaje_actual"] = probabilities_current[:, 1]
+    output_df["prob_cuelgue_actual"] = probabilities_current[:, 2]
+    output_df["confianza_actual"] = np.max(probabilities_current, axis=1)
+    
+    # Predicción FUTURA (siguiente estado - MÁS IMPORTANTE)
+    output_df["prediccion_siguiente"] = predictions_future
+    output_df["clase_siguiente"] = detector.get_classification_names(predictions_future)
+    output_df["prob_normal_siguiente"] = probabilities_future[:, 0]
+    output_df["prob_anomalia_voltaje_siguiente"] = probabilities_future[:, 1]
+    output_df["prob_cuelgue_siguiente"] = probabilities_future[:, 2]
+    output_df["confianza_siguiente"] = np.max(probabilities_future, axis=1)
+    
+    # Alerta preventiva (cambio anticipado)
+    output_df["alerta_preventiva"] = alerta_preventiva.astype(int)
 
     if "status" in df.columns:
         output_df["status"] = df["status"].values
@@ -82,42 +85,54 @@ def predict_multiclass(
     output_df.to_csv(output_csv, index=False)
     print(f"\n   ✓ Predicciones guardadas en {output_csv}")
 
-    # Estadísticas
-    print("\n4️⃣  Estadísticas de predicciones:")
-    print(f"   Normal (0):            {np.sum(predictions == 0):5d} ({np.sum(predictions == 0)/len(predictions)*100:.1f}%)")
-    print(f"   Anomalía Voltaje (1):  {np.sum(predictions == 1):5d} ({np.sum(predictions == 1)/len(predictions)*100:.1f}%)")
-    print(f"   Cuelgue Sistema (2):   {np.sum(predictions == 2):5d} ({np.sum(predictions == 2)/len(predictions)*100:.1f}%)")
+    # Estadísticas - Predicción Futura (MÁS IMPORTANTE)
+    print("\n4️⃣  Estadísticas de predicciones FUTURAS (siguiente estado):")
+    print(f"   Normal (0):            {np.sum(predictions_future == 0):5d} ({np.sum(predictions_future == 0)/len(predictions_future)*100:.1f}%)")
+    print(f"   Anomalía Voltaje (1):  {np.sum(predictions_future == 1):5d} ({np.sum(predictions_future == 1)/len(predictions_future)*100:.1f}%)")
+    print(f"   Cuelgue Sistema (2):   {np.sum(predictions_future == 2):5d} ({np.sum(predictions_future == 2)/len(predictions_future)*100:.1f}%)")
 
-    # Confianza promedio por clase
-    print("\n5️⃣  Confianza promedio por clase:")
+    # Alertas preventivas
+    n_alertas = np.sum(alerta_preventiva)
+    print(f"\n5️⃣  Alertas Preventivas: {n_alertas} ({n_alertas/len(alerta_preventiva)*100:.1f}%)")
+    print(f"   ⚠️  Cambios detectados de estado normal → anomalía/cuelgue")
+
+    # Confianza promedio por clase (futuro)
+    print("\n6️⃣  Confianza promedio por clase (predicción futura):")
     for class_id, class_name in enumerate(["Normal", "Anomalía Voltaje", "Cuelgue Sistema"]):
-        mask = predictions == class_id
+        mask = predictions_future == class_id
         if np.sum(mask) > 0:
-            avg_conf = np.mean(probabilities[mask, class_id])
+            avg_conf = np.mean(probabilities_future[mask, class_id])
             print(f"   {class_name:20s}: {avg_conf:.4f}")
 
-    # Top alertas de confianza
-    print("\n6️⃣  Top 10 predicciones con más confianza:")
-    top_indices = np.argsort(output_df["confianza"].values)[-10:][::-1]
+    # Top alertas preventivas (cambios de estado)
+    print("\n7️⃣  Top 10 alertas preventivas (cambios anticipados):")
+    alert_indices = np.where(alerta_preventiva)[0]
+    if len(alert_indices) > 0:
+        # Ordenar por confianza en la predicción futura
+        confianza_alertas = probabilities_future[alert_indices, predictions_future[alert_indices]]
+        top_alert_indices = alert_indices[np.argsort(confianza_alertas)[-10:][::-1]]
+        
+        for rank, idx in enumerate(top_alert_indices, 1):
+            row = output_df.iloc[idx]
+            print(f"   {rank}. [{row['tiempo']}]")
+            print(f"      Estado actual: {row['clase_actual']} (conf: {row['confianza_actual']:.4f})")
+            print(f"      → Siguiente: {row['clase_siguiente']} (conf: {row['confianza_siguiente']:.4f})")
 
-    for rank, idx in enumerate(top_indices, 1):
-        row = output_df.iloc[idx]
-        print(f"   {rank}. [{row['tiempo']}] {row['clase']:20s} "
-              f"(confianza: {row['confianza']:.4f})")
-
-    # Alertas críticas (cuelgues)
-    cuelgue_mask = predictions == 2
-    if np.sum(cuelgue_mask) > 0:
-        print(f"\n⚠️  ALERTAS DE CUELGUE ({np.sum(cuelgue_mask)} registros):")
-        cuelgue_times = output_df[cuelgue_mask]["tiempo"].values
+    # Alertas críticas (cuelgues predichos)
+    cuelgue_mask_futuro = predictions_future == 2
+    if np.sum(cuelgue_mask_futuro) > 0:
+        print(f"\n🚨 CUELGUES PREDICHOS ({np.sum(cuelgue_mask_futuro)} registros):")
+        cuelgue_times = output_df[cuelgue_mask_futuro]["tiempo"].values
         print(f"   Primero: {cuelgue_times[0]}")
         print(f"   Último: {cuelgue_times[-1]}")
 
     return {
-        "predictions": predictions,
-        "probabilities": probabilities,
-        "output_df": output_df,
-        "method": results["method"]
+        "predictions_current": predictions_current,
+        "predictions_future": predictions_future,
+        "probabilities_current": probabilities_current,
+        "probabilities_future": probabilities_future,
+        "alerta_preventiva": alerta_preventiva,
+        "output_df": output_df
     }
 
 
@@ -127,7 +142,8 @@ def predict_live(
     use_ensemble: bool = True
 ) -> Dict:
     """
-    Predicción en vivo para nuevos datos.
+    Predicción en vivo ANTICIPADA para nuevos datos.
+    Predice el siguiente estado, no el actual.
 
     Args:
         new_data: DataFrame con nuevas medidas
@@ -135,20 +151,31 @@ def predict_live(
         use_ensemble: Si True, usa RF
 
     Returns:
-        Predicciones para los nuevos datos
+        Predicciones anticipadas para los nuevos datos
     """
-    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
+    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path, require_rf=False)
 
-    results = detector.predict(new_data)
+    # Usar predicción anticipada
+    results = detector.predict_next_state(new_data, forecast_minutes=1)
 
     output = {
-        "predicciones": detector.get_classification_names(results["predictions"]),
-        "clases_num": results["predictions"].tolist(),
-        "confianzas": np.max(results["probabilities"], axis=1).tolist(),
-        "probabilidades": {
-            "normal": results["probabilities"][:, 0].tolist(),
-            "anomalia_voltaje": results["probabilities"][:, 1].tolist(),
-            "cuelgue": results["probabilities"][:, 2].tolist()
+        "predicciones_actuales": detector.get_classification_names(results["predictions_current"]),
+        "predicciones_futuras": detector.get_classification_names(results["predictions_future"]),
+        "clases_actuales": results["predictions_current"].tolist(),
+        "clases_futuras": results["predictions_future"].tolist(),
+        "confianzas_actuales": np.max(results["probabilities_current"], axis=1).tolist(),
+        "confianzas_futuras": np.max(results["probabilities_future"], axis=1).tolist(),
+        "alertas_preventivas": results["alerta_preventiva"].tolist(),
+        "n_alertas": results["n_alertas"],
+        "probabilidades_actuales": {
+            "normal": results["probabilities_current"][:, 0].tolist(),
+            "anomalia_voltaje": results["probabilities_current"][:, 1].tolist(),
+            "cuelgue": results["probabilities_current"][:, 2].tolist()
+        },
+        "probabilidades_futuras": {
+            "normal": results["probabilities_future"][:, 0].tolist(),
+            "anomalia_voltaje": results["probabilities_future"][:, 1].tolist(),
+            "cuelgue": results["probabilities_future"][:, 2].tolist()
         }
     }
 

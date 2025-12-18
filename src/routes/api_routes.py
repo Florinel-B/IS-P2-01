@@ -151,7 +151,7 @@ def init_routes(sistema, socketio):
         """Obtener todas las incidencias críticas"""
         return jsonify(sistema.registro.incidencias_criticas)
 
-    def _run_simulation(user_id: str, device_id: int, speed: float, start_offset: int = 0):
+    def _run_simulation(user_id: str, device_id: int, speed: float, start_offset: int = 0, prediction_mode: str = "stream"):
         predictor = _get_predictor()
         predictor.reset_buffer()
 
@@ -167,35 +167,60 @@ def init_routes(sistema, socketio):
 
         state = simulation_states[user_id]
         
-        # Precarga: llenar el buffer con los primeros 60 datos sin emitir eventos
+        # Precarga y/o precálculo según modo
         seq_len = predictor.seq_len  # 60 por defecto
-        print(f"[SIM] Precargando primeros {seq_len} datos...")
-        
-        for i in range(min(seq_len, len(df))):
-            row = df.iloc[i]
-            voltages = {
-                'R1_a': float(row.get('R1_a', 0) or 0),
-                'R2_a': float(row.get('R2_a', 0) or 0),
-                'R1_b': float(row.get('R1_b', 0) or 0),
-                'R2_b': float(row.get('R2_b', 0) or 0)
-            }
-            status_val = int(row.get('status', 1) or 1)
-            # Precarga sin emitir (solo llena el buffer)
-            predictor.predict_single(voltages, status_val, row['tiempo'])
-        
-        print(f"[SIM] ✓ Buffer inicializado con {len(predictor.buffer)} datos")
-        
-        # Notificar que la precarga está lista
-        socketio.emit('precarga_completa', {'buffer_size': len(predictor.buffer)}, room=user_id)
-        
+
+        batch_preds_future = None
+        batch_probs_future = None
+        batch_preds_current = None
+        batch_probs_current = None
+        batch_alerta = None
+
+        if prediction_mode == "batch":
+            # Modo "como usar_ensemble": calculamos predicciones para todo el tramo una vez.
+            print(f"[SIM] Modo batch: precalculando predicciones (t y t+1) sobre {len(df)} filas...")
+            try:
+                results = predictor.detector.predict_next_state(df, forecast_minutes=1)
+                batch_preds_current = results.get('predictions_current')
+                batch_preds_future = results.get('predictions_future')
+                batch_probs_current = results.get('probabilities_current')
+                batch_probs_future = results.get('probabilities_future')
+                batch_alerta = results.get('alerta_preventiva')
+                print(f"[SIM] ✓ Batch listo: alertas={int(results.get('n_alertas', 0) or 0)}")
+            except Exception as e:
+                print(f"[SIM] ⚠️ Falló batch, fallback a stream. Error: {e}")
+                prediction_mode = "stream"
+
+        if prediction_mode == "stream":
+            print(f"[SIM] Precargando primeros {seq_len} datos...")
+            for i in range(min(seq_len, len(df))):
+                row = df.iloc[i]
+                voltages = {
+                    'R1_a': float(row.get('R1_a', 0) or 0),
+                    'R2_a': float(row.get('R2_a', 0) or 0),
+                    'R1_b': float(row.get('R1_b', 0) or 0),
+                    'R2_b': float(row.get('R2_b', 0) or 0)
+                }
+                status_val = int(row.get('status', 1) or 1)
+                # Precarga sin emitir (solo llena el buffer)
+                predictor.predict_single(voltages, status_val, row['tiempo'])
+
+            print(f"[SIM] ✓ Buffer inicializado con {len(predictor.buffer)} datos")
+            socketio.emit('precarga_completa', {'buffer_size': len(predictor.buffer)}, room=user_id)
+
         prev_time = None
+        prev_voltages: Optional[Dict[str, float]] = None
+
+        # Umbrales de incidencias "reglamentarias" (independientes del modelo)
+        HUECO_CUELGUE_SECONDS = 120  # >2 min sin datos
+        SALTO_VOLTAGE_MV = 500       # >= 500mV en cualquier canal
 
         # Demo: limitar puntos emitidos si el dataset es muy grande (evita saturar el navegador)
         max_points = int(state.get('max_points', 2000) or 2000)
 
         for idx, row in df.iterrows():
-            # Saltar los primeros seq_len que ya fueron precargados
-            if idx < seq_len:
+            # Saltar los primeros seq_len que ya fueron precargados SOLO en modo stream
+            if prediction_mode == "stream" and idx < seq_len:
                 continue
             
             if not state.get('running'):
@@ -205,6 +230,27 @@ def init_routes(sistema, socketio):
                 break
 
             if prev_time is not None:
+                # Incidencia por cuelgue (hueco temporal)
+                gap_seconds = (row['tiempo'] - prev_time).total_seconds()
+                if gap_seconds > HUECO_CUELGUE_SECONDS:
+                    msg_gap = f"\ud83d\udea8 CUELGUE/NO-DATOS: hueco de {gap_seconds/60:.1f} min sin registros"
+                    sistema.registro.registrar_mensaje({
+                        'tipo': 'CRITICAL',
+                        'descripcion': msg_gap,
+                        'user_id': user_id,
+                        'incidencia_tipo': 2,
+                        'regla': 'hueco_tiempo',
+                        'gap_seconds': gap_seconds,
+                        'timestamp': row['tiempo'].isoformat() if hasattr(row['tiempo'], 'isoformat') else str(row['tiempo'])
+                    })
+                    socketio.emit('notificacion_incidencia', {
+                        'tipo': 2,
+                        'mensaje': msg_gap,
+                        'regla': 'hueco_tiempo',
+                        'gap_seconds': gap_seconds,
+                        'timestamp': row['tiempo'].isoformat() if hasattr(row['tiempo'], 'isoformat') else str(row['tiempo'])
+                    }, room=user_id)
+
                 delay = max(0.01, (row['tiempo'] - prev_time).total_seconds() / speed)
                 socketio.sleep(delay)
             prev_time = row['tiempo']
@@ -217,61 +263,126 @@ def init_routes(sistema, socketio):
             }
             status_val = int(row.get('status', 1) or 1)
 
-            pred = predictor.predict_single(voltages, status_val, row['tiempo'])
+            # Incidencia por salto de voltaje >= 500mV (cambio brusco)
+            if prev_voltages is not None:
+                deltas = {k: abs(float(voltages[k]) - float(prev_voltages.get(k, 0.0))) for k in ['R1_a', 'R2_a', 'R1_b', 'R2_b']}
+                worst_channel, worst_delta = max(deltas.items(), key=lambda kv: kv[1])
+                if worst_delta >= SALTO_VOLTAGE_MV:
+                    msg_jump = f"\ud83d\udd34 SALTO VOLTAJE: {worst_channel} \u0394={worst_delta:.0f} mV (\u2265 {SALTO_VOLTAGE_MV} mV)"
+                    sistema.registro.registrar_mensaje({
+                        'tipo': 'WARNING',
+                        'descripcion': msg_jump,
+                        'user_id': user_id,
+                        'incidencia_tipo': 1,
+                        'regla': 'salto_voltaje',
+                        'canal': worst_channel,
+                        'delta_mV': float(worst_delta),
+                        'voltajes': voltages,
+                        'timestamp': row['tiempo'].isoformat() if hasattr(row['tiempo'], 'isoformat') else str(row['tiempo'])
+                    })
+                    socketio.emit('notificacion_incidencia', {
+                        'tipo': 1,
+                        'mensaje': msg_jump,
+                        'regla': 'salto_voltaje',
+                        'canal': worst_channel,
+                        'delta_mV': float(worst_delta),
+                        'voltajes': voltages,
+                        'timestamp': row['tiempo'].isoformat() if hasattr(row['tiempo'], 'isoformat') else str(row['tiempo'])
+                    }, room=user_id)
 
-            # Evaluar si hay incidencia detectada y enviar notificación
+            prev_voltages = voltages
+
+            if prediction_mode == "batch" and batch_preds_future is not None:
+                # Reconstruir estructura como RealtimePredictor para que el frontend no cambie
+                pred_actual = int(batch_preds_current[idx]) if batch_preds_current is not None else 0
+                pred_sig = int(batch_preds_future[idx])
+                probs_act = batch_probs_current[idx].tolist() if batch_probs_current is not None else [1.0, 0.0, 0.0]
+                probs_sig = batch_probs_future[idx].tolist() if batch_probs_future is not None else [1.0, 0.0, 0.0]
+                alerta_prev = bool(batch_alerta[idx]) if batch_alerta is not None else False
+                class_names = {0: "Normal", 1: "Anomalía Voltaje (+0.5V)", 2: "Cuelgue Sistema"}
+                pred = {
+                    'prediccion_actual': pred_actual,
+                    'clase_actual': class_names.get(pred_actual, 'Unknown'),
+                    'confianza_actual': float(max(probs_act)) if probs_act else 0.0,
+                    'prob_normal_actual': probs_act[0],
+                    'prob_anomalia_voltaje_actual': probs_act[1],
+                    'prob_cuelgue_actual': probs_act[2],
+                    'prediccion_siguiente': pred_sig,
+                    'clase_siguiente': class_names.get(pred_sig, 'Unknown'),
+                    'confianza_siguiente': float(max(probs_sig)) if probs_sig else 0.0,
+                    'prob_normal_siguiente': probs_sig[0],
+                    'prob_anomalia_voltaje_siguiente': probs_sig[1],
+                    'prob_cuelgue_siguiente': probs_sig[2],
+                    'alerta_preventiva': alerta_prev,
+                    'status': status_val,
+                    'buffer_size': seq_len
+                }
+            else:
+                pred = predictor.predict_single(voltages, status_val, row['tiempo'])
+
+            # NUEVA: Evaluación con PREDICCIÓN ANTICIPADA
             incidencia_msg = None
             incidencia_tipo = None
-            confianza = pred.get('confianza', 0)
-            clase = pred.get('prediccion', 0)
-            lstm_prob = pred.get('lstm_probabilidad', 0)
+            # Normalizar tipos (evita Unknown/str/float en comparaciones e indexación)
+            confianza_actual = float(pred.get('confianza_actual', 0) or 0)
+            confianza_siguiente = float(pred.get('confianza_siguiente', 0) or 0)
+            clase_actual = int(pred.get('prediccion_actual', 0) or 0)
+            clase_siguiente = int(pred.get('prediccion_siguiente', 0) or 0)
+            alerta_preventiva = pred.get('alerta_preventiva', False)
             
-            # Tipo 1: Anomalía Voltaje (LSTM > 70%)
-            if lstm_prob > 0.7:
-                incidencia_tipo = 1
-                incidencia_msg = f"🔴 ALERTA: Anomalía de Voltaje detectada (LSTM prob: {lstm_prob*100:.1f}%)"
+            # Prioridad: Alerta Preventiva (cambio anticipado)
+            if alerta_preventiva:
+                incidencia_tipo = 3  # PREVENTIVA
+                clase_actual_nombre = ["Normal", "Anomalía Voltaje", "Cuelgue"][clase_actual]
+                clase_siguiente_nombre = ["Normal", "Anomalía Voltaje", "Cuelgue"][clase_siguiente]
+                incidencia_msg = f"⚠️  ALERTA PREVENTIVA: {clase_actual_nombre} → {clase_siguiente_nombre} (confianza: {confianza_siguiente*100:.1f}%)"
             
-            # Tipo 2: Cuelgue Sistema (RF > 70% y clase == 2)
-            if clase == 2 and confianza > 0.7:
+            # Tipo 2: Cuelgue Sistema predicho (clase siguiente = 2)
+            elif clase_siguiente == 2 and confianza_siguiente > 0.7:
                 incidencia_tipo = 2
-                incidencia_msg = f"🔴 CRÍTICO: Cuelgue del Sistema detectado (RF prob: {confianza*100:.1f}%)"
+                incidencia_msg = f"🔴 CRÍTICO PREDICHO: Cuelgue del Sistema (RF prob: {confianza_siguiente*100:.1f}%)"
+            
+            # Tipo 1: Anomalía Voltaje predicha (clase siguiente = 1)
+            elif clase_siguiente == 1 and confianza_siguiente > 0.7:
+                incidencia_tipo = 1
+                incidencia_msg = f"🔴 ALERTA PREDICHA: Anomalía de Voltaje (RF prob: {confianza_siguiente*100:.1f}%)"
             
             # Enviar notificación si hay incidencia
             if incidencia_msg:
                 sistema.registro.registrar_mensaje({
-                    'tipo': 'CRITICAL' if incidencia_tipo == 2 else 'WARNING',
+                    'tipo': 'CRITICAL' if incidencia_tipo == 2 else 'WARNING' if incidencia_tipo in [1, 3] else 'INFO',
                     'descripcion': incidencia_msg,
                     'user_id': user_id,
                     'incidencia_tipo': incidencia_tipo,
-                    'confianza': confianza
+                    'confianza': confianza_siguiente,
+                    'alerta_preventiva': incidencia_tipo == 3
                 })
                 socketio.emit('notificacion_incidencia', {
                     'tipo': incidencia_tipo,
                     'mensaje': incidencia_msg,
-                    'confianza': confianza,
+                    'confianza': confianza_siguiente,
+                    'alerta_preventiva': incidencia_tipo == 3,
                     'tiempo': row['tiempo'].isoformat()
                 }, room=user_id)
 
-            # Mapeo solicitado para la gráfica: 1: Normal, 0: Anomalía, 2: Cuelgue
-            # LSTM: 0 (Normal) -> 1, 1 (Anomalía) -> 0
-            pred_lstm_mapped = 1 if pred.get('lstm_prediccion') == 0 else 0
-            
-            # RF (Ensemble): 0 (Normal) -> 1, 1 (Anomalía) -> 0, 2 (Cuelgue) -> 2
-            rf_raw = pred.get('prediccion', 0)
-            if rf_raw == 0:
-                pred_rf_mapped = 1
-            elif rf_raw == 1:
-                pred_rf_mapped = 0
-            else:
-                pred_rf_mapped = 2
+            # Codificación unificada (modelo y UI):
+            # 0 = Normal, 1 = Anomalía Voltaje, 2 = Cuelgue
+            # Usar predicción del SIGUIENTE estado como valor principal para la gráfica
+            pred_mapped = int(pred.get('prediccion_siguiente', 0))
 
             payload = {
                 'tiempo': row['tiempo'].isoformat(),
                 'status': status_val,
                 **voltages,
-                'prediccion': pred,
-                'pred_lstm': pred_lstm_mapped,
-                'pred_rf': pred_rf_mapped,
+                'prediccion_completa': pred,
+                'prediccion_actual': pred.get('prediccion_actual', 0),
+                'prediccion_siguiente': pred.get('prediccion_siguiente', 0),
+                'clase_actual': pred.get('clase_actual', 'Unknown'),
+                'clase_siguiente': pred.get('clase_siguiente', 'Unknown'),
+                'confianza_actual': pred.get('confianza_actual', 0),
+                'confianza_siguiente': pred.get('confianza_siguiente', 0),
+                'alerta_preventiva': pred.get('alerta_preventiva', False),
+                'pred': pred_mapped,
                 'incidencia': incidencia_tipo
             }
             socketio.emit('dato_voltaje', payload, room=user_id)
@@ -288,6 +399,7 @@ def init_routes(sistema, socketio):
         speed = float(data.get('speed', 1))
         start_offset = int(data.get('start_offset', 0))  # Ej: 100 para saltarse primeras 100 filas
         max_points = int(data.get('max_points', 2000) or 2000)
+        prediction_mode = str(data.get('prediction_mode', 'stream') or 'stream').strip().lower()
 
         if not user_id:
             return jsonify({'error': 'user_id requerido'}), 400
@@ -301,9 +413,9 @@ def init_routes(sistema, socketio):
             simulation_states[user_id]['running'] = False
 
         simulation_states[user_id] = {'running': True, 'device_id': device_id, 'speed': speed, 'max_points': max_points}
-        socketio.start_background_task(_run_simulation, user_id, device_id, speed, start_offset)
+        socketio.start_background_task(_run_simulation, user_id, device_id, speed, start_offset, prediction_mode)
 
-        return jsonify({'success': True, 'user_id': user_id, 'id': device_id, 'speed': speed})
+        return jsonify({'success': True, 'user_id': user_id, 'id': device_id, 'speed': speed, 'prediction_mode': prediction_mode})
 
     @api_bp.route('/simulacion/detener', methods=['POST'])
     def detener_simulacion():

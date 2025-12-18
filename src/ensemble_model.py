@@ -27,11 +27,12 @@ class EnsembleAnomalyDetector:
     - Random Forest para fusión y predicción multiclase
     """
 
-    def __init__(self, lstm_model_path: str, rf_model_path: Optional[str] = None):
+    def __init__(self, lstm_model_path: str, rf_model_path: Optional[str] = None, require_rf: bool = True):
         """
         Args:
             lstm_model_path: Path al modelo LSTM (modelo_anomalias.pth o finetuned)
             rf_model_path: Path al Random Forest (opcional, se entrena si no existe)
+            require_rf: Si True, requiere que el RF esté cargado; si False, permite entrenarlo después
         """
         self.lstm_model_path = lstm_model_path
         self.rf_model_path = rf_model_path or "modelo_ensemble_rf.pkl"
@@ -44,17 +45,20 @@ class EnsembleAnomalyDetector:
         self.scaler = self.lstm_dict["scaler"]
         self.seq_len = self.lstm_dict.get("seq_len", 60)
 
-        # Random Forest (será cargado - requerido)
+        # Random Forest (será cargado - opcional)
         self.rf_model: RandomForestClassifier = None  # type: ignore
         self.rf_scaler: StandardScaler = None  # type: ignore
 
         print(f"   ✓ LSTM threshold: {self.lstm_threshold:.2f}")
         print(f"   ✓ Sequence length: {self.seq_len}")
         
-        # Intentar cargar RF (requerido para usar el modelo completo)
+        # Intentar cargar RF (opcional)
         if not self.load_random_forest():
-            raise RuntimeError(f"❌ CRÍTICO: No se puede cargar el Random Forest desde {self.rf_model_path}. "
-                             f"Se requiere el modelo RF entrenado para usar solo el modelo completo (sin heurística).")
+            if require_rf:
+                raise RuntimeError(f"❌ CRÍTICO: No se puede cargar el Random Forest desde {self.rf_model_path}. "
+                                 f"Se requiere el modelo RF entrenado para usar solo el modelo completo (sin heurística).")
+            else:
+                print(f"⚠️  Random Forest no encontrado. Se puede entrenar después.")
 
     def detect_hangs(self, df: pd.DataFrame, hang_duration_minutes: int = 2) -> np.ndarray:
         """
@@ -250,7 +254,7 @@ class EnsembleAnomalyDetector:
     def predict(
         self,
         df: pd.DataFrame
-    ) -> Dict[str, np.ndarray]:
+    ) -> Dict:
         """
         Realiza predicción multiclase (0/1/2) usando el modelo completo (LSTM + RF).
         Funciona incluso con DataFrames pequeños (< seq_len).
@@ -287,21 +291,35 @@ class EnsembleAnomalyDetector:
             lstm_preds = lstm_preds_padded
 
         # Usar Random Forest (modelo completo - sin heurística)
-        print("   ✓ Usando Random Forest Ensemble")
-        X = self.create_ensemble_features(df, lstm_probs, hang_labels)
-        X_scaled = self.rf_scaler.transform(X)
-
-        predictions = self.rf_model.predict(X_scaled)
-        probabilities_rf = self.rf_model.predict_proba(X_scaled)
-
-        # Asegurar que probabilities tenga 3 columnas (0, 1, 2)
-        # El RF puede predecir solo 2 clases si no hay ejemplos de la 3ª
-        if probabilities_rf.shape[1] < 3:
+        if self.rf_model is None or self.rf_scaler is None:
+            print("   ⚠️  Random Forest no disponible, usando heurística LSTM + detección de cuelgues...")
+            # Lógica heurística: si hay cuelgue, clase 2; si hay anomalía LSTM, clase 1; si no, clase 0
+            predictions = np.where(hang_labels == 1, 2, lstm_preds.astype(int))
+            
+            # Probabilidades heurísticas
             probabilities = np.zeros((len(df), 3))
-            for i, class_id in enumerate(self.rf_model.classes_):
-                probabilities[:, class_id] = probabilities_rf[:, i]
+            for i in range(len(df)):
+                if hang_labels[i] == 1:
+                    probabilities[i] = [0.0, 0.0, 1.0]  # Cuelgue
+                else:
+                    prob_anom = lstm_probs[i]
+                    probabilities[i] = [1.0 - prob_anom, prob_anom, 0.0]  # Normal o Anomalía voltaje
         else:
-            probabilities = probabilities_rf
+            print("   ✓ Usando Random Forest Ensemble")
+            X = self.create_ensemble_features(df, lstm_probs, hang_labels)
+            X_scaled = self.rf_scaler.transform(X)
+
+            predictions = self.rf_model.predict(X_scaled)
+            probabilities_rf = self.rf_model.predict_proba(X_scaled)
+
+            # Asegurar que probabilities tenga 3 columnas (0, 1, 2)
+            # El RF puede predecir solo 2 clases si no hay ejemplos de la 3ª
+            if probabilities_rf.shape[1] < 3:
+                probabilities = np.zeros((len(df), 3))
+                for i, class_id in enumerate(self.rf_model.classes_):
+                    probabilities[:, class_id] = probabilities_rf[:, i]
+            else:
+                probabilities = probabilities_rf
 
         print(f"   Resultados: {np.sum(predictions == 0)} normal, "
               f"{np.sum(predictions == 1)} anomalía voltaje, "
@@ -311,7 +329,8 @@ class EnsembleAnomalyDetector:
             "predictions": predictions,
             "probabilities": probabilities,
             "lstm_probs": lstm_probs,
-            "hang_labels": hang_labels
+            "hang_labels": hang_labels,
+            "method": "random_forest" if (self.rf_model is not None and self.rf_scaler is not None) else "heuristic"
         }
 
     def get_classification_names(self, predictions: np.ndarray) -> List[str]:
@@ -322,6 +341,149 @@ class EnsembleAnomalyDetector:
             2: "Cuelgue Sistema"
         }
         return [class_names.get(int(p), "Unknown") for p in predictions]
+
+    def predict_next_state(
+        self,
+        df: pd.DataFrame,
+        forecast_minutes: int = 1
+    ) -> Dict:
+        """
+        Realiza predicción ANTICIPADA: predice el estado en los próximos minutos.
+        
+        Esto es MÁS IMPORTANTE que predecir el estado actual, ya que permite
+        alertas preventivas (p. ej., detectar que en 1-2 minutos habrá una anomalía).
+        
+        Args:
+            df: DataFrame con datos históricos
+            forecast_minutes: Minutos hacia el futuro a predecir (1, 2, 5, 10, etc.)
+        
+        Returns:
+            Dict con predicciones anticipadas:
+                - 'predictions_current': Predicción del estado actual (t)
+                - 'predictions_future': Predicción del siguiente estado (t+forecast_minutes)
+                - 'probabilities_current': Probabilidades actuales
+                - 'probabilities_future': Probabilidades futuras
+                - 'alerta_preventiva': Bool indicando si hay cambio hacia anomalía/cuelgue
+        """
+        # 1. Predicción del estado actual
+        current_results = self.predict(df)
+        predictions_current = current_results["predictions"]
+        probabilities_current = current_results["probabilities"]
+        
+        # 2. Crear DataFrame desplazado para predecir el futuro
+        # Usamos los últimos forecast_minutes datos como patrón
+        df_future = df.copy()
+        
+        # Extraer LSTM features para futuro (mismo modelo)
+        lstm_probs_future, lstm_preds_future = self.extract_lstm_features(df_future)
+        
+        # Detectar cuelgues futuros (status != 1 en los próximos minutos)
+        hang_labels_future = self.detect_hangs(df_future, hang_duration_minutes=forecast_minutes)
+        
+        # Ajustar tamaños
+        n_df = len(df_future)
+        n_lstm = len(lstm_probs_future)
+        offset = n_df - n_lstm
+        
+        if offset > 0:
+            lstm_probs_future_padded = np.concatenate([np.zeros(offset), lstm_probs_future])
+            lstm_preds_future_padded = np.concatenate([np.zeros(offset), lstm_preds_future])
+        else:
+            lstm_probs_future_padded = lstm_probs_future[:n_df]
+            lstm_preds_future_padded = lstm_preds_future[:n_df]
+        
+        # Usar Random Forest para predicción futura
+        if self.rf_model is None or self.rf_scaler is None:
+            print("   ⚠️  RF no disponible, usando heurística para predicción futura...")
+            predictions_future = np.where(hang_labels_future == 1, 2, lstm_preds_future_padded.astype(int))
+            
+            probabilities_future = np.zeros((len(df_future), 3))
+            for i in range(len(df_future)):
+                if hang_labels_future[i] == 1:
+                    probabilities_future[i] = [0.0, 0.0, 1.0]
+                else:
+                    prob_anom = lstm_probs_future_padded[i]
+                    probabilities_future[i] = [1.0 - prob_anom, prob_anom, 0.0]
+        else:
+            X_future = self.create_ensemble_features(df_future, lstm_probs_future_padded, hang_labels_future)
+            X_future_scaled = self.rf_scaler.transform(X_future)
+            
+            predictions_future = self.rf_model.predict(X_future_scaled)
+            probabilities_future_rf = self.rf_model.predict_proba(X_future_scaled)
+            
+            if probabilities_future_rf.shape[1] < 3:
+                probabilities_future = np.zeros((len(df_future), 3))
+                for i, class_id in enumerate(self.rf_model.classes_):
+                    probabilities_future[:, class_id] = probabilities_future_rf[:, i]
+            else:
+                probabilities_future = probabilities_future_rf
+        
+        # 3. Detectar alertas preventivas (cambios de estado hacia anomalía/cuelgue)
+        alerta_preventiva = np.zeros(len(df), dtype=bool)
+        for i in range(len(df)):
+            # Cambio de Normal (0) a Anomalía (1) o Cuelgue (2)
+            if predictions_current[i] == 0 and predictions_future[i] > 0:
+                alerta_preventiva[i] = True
+            # Cambio a Cuelgue (prioridad máxima)
+            elif predictions_future[i] == 2:
+                alerta_preventiva[i] = True
+        
+        return {
+            "predictions_current": predictions_current,
+            "predictions_future": predictions_future,
+            "probabilities_current": probabilities_current,
+            "probabilities_future": probabilities_future,
+            "alerta_preventiva": alerta_preventiva,
+            "forecast_minutes": forecast_minutes,
+            "n_alertas": np.sum(alerta_preventiva)
+        }
+
+    def save_complete_model(self, output_path: str = "modelo_ensemble_completo.pkl") -> None:
+        """
+        Guarda el modelo completo (LSTM + RF + scalers) en un archivo único.
+        
+        Args:
+            output_path: Ruta donde guardar el modelo completo
+        """
+        complete_model = {
+            "lstm_model_path": self.lstm_model_path,
+            "lstm_dict": self.lstm_dict,
+            "rf_model": self.rf_model,
+            "rf_scaler": self.rf_scaler,
+            "seq_len": self.seq_len,
+            "lstm_threshold": self.lstm_threshold,
+            "scaler": self.scaler
+        }
+        
+        joblib.dump(complete_model, output_path)
+        print(f"   ✓ Modelo completo guardado: {output_path}")
+
+    @staticmethod
+    def load_complete_model(model_path: str = "modelo_ensemble_completo.pkl"):
+        """
+        Carga un modelo completo previamente guardado y retorna un detector listo para usar.
+        
+        Args:
+            model_path: Ruta del modelo completo guardado
+            
+        Returns:
+            EnsembleAnomalyDetector configurado con el modelo cargado
+        """
+        complete_model = joblib.load(model_path)
+        
+        # Crear detector con require_rf=False para permitir inicialización sin RF
+        detector = EnsembleAnomalyDetector(
+            lstm_model_path=complete_model["lstm_model_path"],
+            require_rf=False
+        )
+        
+        # Restaurar el modelo RF y scaler si existen
+        if complete_model.get("rf_model") is not None:
+            detector.rf_model = complete_model["rf_model"]
+            detector.rf_scaler = complete_model["rf_scaler"]
+            print(f"✓ Modelo Random Forest restaurado desde {model_path}")
+        
+        return detector
 
 
 def create_target_labels(df: pd.DataFrame, hang_duration_minutes: int = 2) -> np.ndarray:

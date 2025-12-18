@@ -3,6 +3,7 @@ Script de predicción en tiempo real/elemento a elemento
 Para integración con página web y sistemas de monitoreo
 """
 
+import os
 import torch
 import numpy as np
 import pandas as pd
@@ -17,14 +18,25 @@ class RealtimePredictor:
     Diseñado para integración con aplicaciones web y sistemas de monitoreo.
     """
     
-    def __init__(self, lstm_model_path: str = "modelo_anomalias_finetuned.pth"):
+    def __init__(self, lstm_model_path: str = "modelo_anomalias_finetuned.pth", 
+                 model_completo_path: Optional[str] = "modelo_ensemble_completo.pkl"):
         """
         Inicializa el predictor.
         
         Args:
             lstm_model_path: Path al modelo LSTM
+            model_completo_path: Path al modelo ensemble completo (si existe, tiene prioridad)
         """
-        self.detector = EnsembleAnomalyDetector(lstm_model_path)
+        # Intentar cargar modelo completo primero
+        if model_completo_path and os.path.exists(model_completo_path):
+            print(f"📦 Cargando modelo completo desde {model_completo_path}...")
+            self.detector = EnsembleAnomalyDetector.load_complete_model(model_completo_path)
+            rf_status = "✓ (Completo con RF)"
+        else:
+            # Fallback: cargar solo LSTM con heurística
+            print(f"📊 Cargando modelo LSTM desde {lstm_model_path}...")
+            self.detector = EnsembleAnomalyDetector(lstm_model_path, require_rf=False)
+            rf_status = "⚠️  (Heurística LSTM)"
         
         # Buffer para secuencias (necesario para LSTM)
         self.seq_len = self.detector.seq_len
@@ -34,7 +46,7 @@ class RealtimePredictor:
         print(f"✓ Predictor inicializado")
         print(f"   - LSTM threshold: {self.detector.lstm_threshold}")
         print(f"   - Sequence length: {self.seq_len}")
-        print(f"   - Modelo completo (RF + LSTM): ✓")
+        print(f"   - Modelo ensemble: {rf_status}")
     
     def predict_single(
         self,
@@ -75,24 +87,30 @@ class RealtimePredictor:
         
         # Rellenar con padding si es necesario
         if len(df_buffer) < self.seq_len:
-            first_row = df_buffer.iloc[0].to_dict() if len(df_buffer) > 0 else {col: 0 for col in ["voltageReceiver1", "voltageReceiver2", "status"]}
+            first_row = df_buffer.iloc[0].to_dict() if len(df_buffer) > 0 else {col: 0 for col in ["R1_a", "R2_a", "R1_b", "R2_b", "status"]}
             padding_rows = [first_row] * (self.seq_len - len(df_buffer))
             df_padding = pd.DataFrame(padding_rows)
             df_buffer = pd.concat([df_padding, df_buffer], ignore_index=True)
 
-        result = self.detector.predict(df_buffer)
+        # Usar predicción anticipada
+        result = self.detector.predict_next_state(df_buffer, forecast_minutes=1)
 
         # Tomar la predicción del último elemento (el que acabamos de agregar)
         idx = len(df_buffer) - 1
-        prediction = int(result["predictions"][idx])
-
-        probs_row = result["probabilities"][idx]
-        probs = probs_row.tolist() if hasattr(probs_row, "tolist") else list(probs_row)
-
-        hang_label = int(result["hang_labels"][idx]) if len(result["hang_labels"]) > idx else 0
-        lstm_prob = float(result["lstm_probs"][idx]) if len(result["lstm_probs"]) > idx else 0.0
-        lstm_pred = 1 if lstm_prob >= self.detector.lstm_threshold else 0
-        confianza = float(max(probs)) if len(probs) else 0.0
+        
+        # Predicción actual y futura
+        prediction_actual = int(result["predictions_current"][idx])
+        prediction_siguiente = int(result["predictions_future"][idx])
+        
+        probs_actual = result["probabilities_current"][idx]
+        probs_siguiente = result["probabilities_future"][idx]
+        probs_actual_list = probs_actual.tolist() if hasattr(probs_actual, "tolist") else list(probs_actual)
+        probs_siguiente_list = probs_siguiente.tolist() if hasattr(probs_siguiente, "tolist") else list(probs_siguiente)
+        
+        alerta_preventiva = bool(result["alerta_preventiva"][idx])
+        
+        confianza_actual = float(max(probs_actual_list)) if len(probs_actual_list) else 0.0
+        confianza_siguiente = float(max(probs_siguiente_list)) if len(probs_siguiente_list) else 0.0
         
         # Mapear a nombres
         class_names = {
@@ -102,15 +120,24 @@ class RealtimePredictor:
         }
         
         return {
-            "prediccion": prediction,
-            "clase": class_names.get(prediction, "Unknown"),
-            "confianza": confianza,
-            "prob_normal": probs[0],
-            "prob_anomalia_voltaje": probs[1],
-            "prob_cuelgue": probs[2],
-            "lstm_probabilidad": lstm_prob,
-            "lstm_prediccion": lstm_pred,
-            "cuelgue_detectado": int(hang_label),
+            # ACTUAL
+            "prediccion_actual": prediction_actual,
+            "clase_actual": class_names.get(prediction_actual, "Unknown"),
+            "confianza_actual": confianza_actual,
+            "prob_normal_actual": probs_actual_list[0],
+            "prob_anomalia_voltaje_actual": probs_actual_list[1],
+            "prob_cuelgue_actual": probs_actual_list[2],
+            
+            # SIGUIENTE (MÁS IMPORTANTE)
+            "prediccion_siguiente": prediction_siguiente,
+            "clase_siguiente": class_names.get(prediction_siguiente, "Unknown"),
+            "confianza_siguiente": confianza_siguiente,
+            "prob_normal_siguiente": probs_siguiente_list[0],
+            "prob_anomalia_voltaje_siguiente": probs_siguiente_list[1],
+            "prob_cuelgue_siguiente": probs_siguiente_list[2],
+            
+            # ALERTA
+            "alerta_preventiva": alerta_preventiva,
             "status": status,
             "buffer_size": len(self.buffer)
         }

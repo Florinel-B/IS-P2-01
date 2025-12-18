@@ -22,8 +22,8 @@ from ensemble_model import (
 
 
 def train_ensemble(
-    data_pkl_path: str = "datos_procesados.pkl",
-    lstm_model_path: str = "modelo_anomalias_finetuned.pth",
+    data_pkl_path: str = "../datos_procesados.pkl",
+    lstm_model_path: str = "../modelo_anomalias_finetuned.pth",
     hang_duration: int = 2,
     train_split: float = 0.8
 ) -> None:
@@ -127,7 +127,7 @@ def train_ensemble(
 
     # Inicializar ensemble PRIMERO para extraer LSTM probs
     print("\n3️⃣  Inicializando detector ensemble...")
-    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
+    detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path, require_rf=False)
 
     # Extraer features LSTM ANTES de crear targets
     print("\n4️⃣  Extrayendo features LSTM para crear labels...")
@@ -222,8 +222,8 @@ def train_ensemble(
 
 if __name__ == "__main__":
     train_ensemble(
-        data_pkl_path="datos_procesados.pkl",
-        lstm_model_path="modelo_anomalias_finetuned.pth",
+        data_pkl_path="../datos_procesados.pkl",
+        lstm_model_path="../modelo_anomalias_finetuned.pth",
         hang_duration=2,
         train_split=0.8
     )

@@ -27,11 +27,12 @@ class EnsembleAnomalyDetector:
     - Random Forest para fusión y predicción multiclase
     """
 
-    def __init__(self, lstm_model_path: str, rf_model_path: Optional[str] = None):
+    def __init__(self, lstm_model_path: str, rf_model_path: Optional[str] = None, require_rf: bool = True):
         """
         Args:
             lstm_model_path: Path al modelo LSTM (modelo_anomalias.pth o finetuned)
             rf_model_path: Path al Random Forest (opcional, se entrena si no existe)
+            require_rf: Si True, requiere que el RF esté cargado; si False, permite entrenarlo después
         """
         self.lstm_model_path = lstm_model_path
         self.rf_model_path = rf_model_path or "modelo_ensemble_rf.pkl"
@@ -44,17 +45,20 @@ class EnsembleAnomalyDetector:
         self.scaler = self.lstm_dict["scaler"]
         self.seq_len = self.lstm_dict.get("seq_len", 60)
 
-        # Random Forest (será cargado - requerido)
+        # Random Forest (será cargado - opcional)
         self.rf_model: RandomForestClassifier = None  # type: ignore
         self.rf_scaler: StandardScaler = None  # type: ignore
 
         print(f"   ✓ LSTM threshold: {self.lstm_threshold:.2f}")
         print(f"   ✓ Sequence length: {self.seq_len}")
         
-        # Intentar cargar RF (requerido para usar el modelo completo)
+        # Intentar cargar RF (opcional)
         if not self.load_random_forest():
-            raise RuntimeError(f"❌ CRÍTICO: No se puede cargar el Random Forest desde {self.rf_model_path}. "
-                             f"Se requiere el modelo RF entrenado para usar solo el modelo completo (sin heurística).")
+            if require_rf:
+                raise RuntimeError(f"❌ CRÍTICO: No se puede cargar el Random Forest desde {self.rf_model_path}. "
+                                 f"Se requiere el modelo RF entrenado para usar solo el modelo completo (sin heurística).")
+            else:
+                print(f"⚠️  Random Forest no encontrado. Se puede entrenar después.")
 
     def detect_hangs(self, df: pd.DataFrame, hang_duration_minutes: int = 2) -> np.ndarray:
         """

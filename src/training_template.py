@@ -14,50 +14,27 @@ from sklearn.preprocessing import StandardScaler
 
 # --- Configuración de dispositivo CUDA ---
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-print(f"🖥️  Dispositivo: {DEVICE}")
-if torch.cuda.is_available():
-    print(f"   GPU: {torch.cuda.get_device_name(0)}")
-    print(f"   Memoria disponible: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+
 
 # --- 1. Análisis de Datos y Correlaciones ---
 def analizar_datos(df: pd.DataFrame):
     """
     Realiza un estudio estadístico y de correlación exhaustivo sobre el 100% de los datos.
     """
-    print("="*70)
-    print("--- ANÁLISIS EXPLORATORIO DE DATOS (100%) ---")
-    print("="*70)
+
     
     # 1. Limpieza básica para análisis (rellenar huecos si existen)
     df_clean = df.copy().ffill().bfill()
 
     # === ESTADÍSTICAS DESCRIPTIVAS BÁSICAS ===
-    print("\n1. ESTADÍSTICAS DESCRIPTIVAS")
-    print("-" * 70)
+
     cols_numericas = ['status', 'R1_a', 'R2_a', 'R1_b', 'R2_b']
-    print(df_clean[cols_numericas].describe())
     
-    # Información sobre valores nulos en datos originales
-    print("\n2. VALORES NULOS (antes de limpieza):")
-    print(df[cols_numericas].isnull().sum())
-    
-    # Distribución temporal
-    print("\n3. INFORMACIÓN TEMPORAL:")
-    print(f"   Fecha inicio: {df_clean['tiempo'].min()}")
-    print(f"   Fecha fin: {df_clean['tiempo'].max()}")
-    print(f"   Duración total: {df_clean['tiempo'].max() - df_clean['tiempo'].min()}")
-    print(f"   Número de dispositivos únicos: {df_clean['id'].nunique()}")
-    
-    # === MATRIZ DE CORRELACIÓN ESTÁNDAR ===
-    print("\n4. MATRIZ DE CORRELACIÓN (Pearson):")
-    print("-" * 70)
+
     cols_interes = ['status', 'R1_a', 'R2_a', 'R1_b', 'R2_b']
     corr_matrix = df_clean[cols_interes].corr()
-    print(corr_matrix.round(4))
 
-    # === CORRELACIÓN AUMENTADA: R1*status vs R2*status ===
-    print("\n5. CORRELACIÓN AUMENTADA (Interacción con Status):")
-    print("-" * 70)
+
     # Crear features aumentadas
     df_clean['R1_a_status'] = df_clean['R1_a'] * df_clean['status']
     df_clean['R2_a_status'] = df_clean['R2_a'] * df_clean['status']
@@ -67,30 +44,19 @@ def analizar_datos(df: pd.DataFrame):
     # Correlación entre las interacciones
     cols_aumentadas = ['R1_a_status', 'R2_a_status', 'R1_b_status', 'R2_b_status']
     corr_aumentada = df_clean[cols_aumentadas].corr()
-    print(corr_aumentada.round(4))
     
-    print("\n   Interpretación:")
-    print(f"   Correlación R1_a*status <-> R2_a*status: {corr_aumentada.loc['R1_a_status', 'R2_a_status']:.4f}")
-    print(f"   Correlación R1_b*status <-> R2_b*status: {corr_aumentada.loc['R1_b_status', 'R2_b_status']:.4f}")
+    
 
-    # === ANÁLISIS DEL IMPACTO DE TRENES ===
-    print("\n6. IMPACTO DE LA PRESENCIA DE TRENES (status):")
-    print("-" * 70)
     promedios = df_clean.groupby('status')[['R1_a', 'R2_a', 'R1_b', 'R2_b']].agg(['mean', 'std', 'min', 'max'])
-    print(promedios)
     
     # Diferencia de voltaje entre con/sin tren
-    print("\n   Diferencia promedio (con tren - sin tren):")
     if 1.0 in df_clean['status'].values and 0.0 in df_clean['status'].values:
         with_train = df_clean[df_clean['status'] == 1.0][['R1_a', 'R2_a']].mean()
         without_train = df_clean[df_clean['status'] == 0.0][['R1_a', 'R2_a']].mean()
         diff = with_train - without_train
-        print(f"   R1_a: {diff['R1_a']:.2f} mV")
-        print(f"   R2_a: {diff['R2_a']:.2f} mV")
 
-    # === CONTEO DE ANOMALÍAS ===
-    print("\n7. DETECCIÓN DE ANOMALÍAS (Saltos > 500mV):")
-    print("-" * 70)
+
+
     # Calcular diferencias por dispositivo para evitar mezclar dispositivos
     deltas_list = []
     for device_id in df_clean['id'].unique():
@@ -109,35 +75,18 @@ def analizar_datos(df: pd.DataFrame):
     total_anomalies = len(anomalies_r1a) + len(anomalies_r2a) + len(anomalies_r1b) + len(anomalies_r2b)
     total_samples = len(df_clean)
     
-    print(f"   Total de muestras: {total_samples}")
-    print(f"   Anomalías en R1_a: {len(anomalies_r1a)}")
-    print(f"   Anomalías en R2_a: {len(anomalies_r2a)}")
-    print(f"   Anomalías en R1_b: {len(anomalies_r1b)}")
-    print(f"   Anomalías en R2_b: {len(anomalies_r2b)}")
-    print(f"   Total anomalías: {total_anomalies}")
-    print(f"   Ratio de anomalías: {total_anomalies/total_samples:.4%}")
     
-    # === ANÁLISIS DE VARIABILIDAD ===
-    print("\n8. ANÁLISIS DE VARIABILIDAD:")
-    print("-" * 70)
-    print("   Coeficiente de Variación (CV = std/mean):")
+
     for col in ['R1_a', 'R2_a', 'R1_b', 'R2_b']:
         cv = df_clean[col].std() / df_clean[col].mean()
-        print(f"   {col}: {cv:.4f}")
     
-    # === RELACIÓN ENTRE R1 Y R2 ===
-    print("\n9. RELACIÓN ENTRE R1 Y R2 (por canal):")
-    print("-" * 70)
-    print(f"   Correlación R1_a <-> R2_a: {df_clean['R1_a'].corr(df_clean['R2_a']):.4f}")
-    print(f"   Correlación R1_b <-> R2_b: {df_clean['R1_b'].corr(df_clean['R2_b']):.4f}")
+
     
     # Diferencia promedio entre receptores
     df_clean['diff_a'] = (df_clean['R1_a'] - df_clean['R2_a']).abs()
     df_clean['diff_b'] = (df_clean['R1_b'] - df_clean['R2_b']).abs()
-    print(f"   Diferencia media |R1_a - R2_a|: {df_clean['diff_a'].mean():.2f} mV")
-    print(f"   Diferencia media |R1_b - R2_b|: {df_clean['diff_b'].mean():.2f} mV")
 
-    print("\n" + "="*70)
+
     return total_anomalies
 
 # --- 2. Dataset con Historial de Anomalías ---
@@ -213,7 +162,7 @@ class VoltageDropDataset(Dataset):
         return history_features
 
     def __len__(self):
-        return max(0, len(self.features) - self.seq_len + 1)
+        return max(0, len(self.features) - self.seq_len)
 
     def __getitem__(self, idx):
         # Secuencia de entrada: ventana temporal completa
@@ -544,7 +493,6 @@ def aumentar_datos_con_ruido(dataset, factor=5):
     features_list = []
     labels_list = []
     
-    print("\n--- Iniciando Data Augmentation ---")
     anomaly_count = 0
     normal_count = 0
     
@@ -568,10 +516,6 @@ def aumentar_datos_con_ruido(dataset, factor=5):
                 features_list.append(x + noise)
                 labels_list.append(y)
     
-    print(f"Anomalías originales: {anomaly_count}")
-    print(f"Normales originales: {normal_count}")
-    print(f"Datos tras aumentación: {len(features_list)}")
-    print(f"Ratio final: {(anomaly_count * (factor + 1)) / len(features_list):.2%}")
     
     x_tensor = torch.stack(features_list)
     y_tensor = torch.stack(labels_list)
@@ -717,28 +661,23 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
         from torch.optim.swa_utils import AveragedModel, SWALR
         swa_model = AveragedModel(model)
         swa_scheduler = SWALR(optimizer, swa_lr=initial_lr * 0.1)  # LR más bajo para SWA
-        print(f"   SWA habilitado: comenzará en epoch {swa_start}")
     
     best_val_f1 = 0
     best_model_state = None
     epochs_without_improvement = 0
     
-    print(f"\n{'='*70}")
-    print("Iniciando entrenamiento con Cosine Annealing Warm Restarts")
-    print(f"   T_0={ca_scheduler.T_0}, T_mult={ca_scheduler.T_mult}, eta_min={ca_scheduler.eta_min}")
-    print(f"{'='*70}")
     
     model.train()
     warmup_epochs = 10
 
     for epoch in range(epochs):
         total_loss = 0
-        for x_batch, y_batch in train_loader:
-            x_batch = x_batch.to(device)
+        for X_batch, y_batch in train_loader:
+            X_batch = X_batch.to(device)
             y_batch = y_batch.to(device)
             
             optimizer.zero_grad()
-            logits, _ = model(x_batch)  # Ahora retorna logits
+            logits, _ = model(X_batch)  # Ahora retorna logits
             
             loss = criterion(logits, y_batch)  # BCEWithLogitsLoss
             
@@ -776,15 +715,15 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
             val_batch_count = 0
             
             with torch.no_grad():
-                for x_batch, y_batch in val_loader:
-                    x_batch = x_batch.to(device)
+                for X_batch, y_batch in val_loader:
+                    X_batch = X_batch.to(device)
                     y_batch = y_batch.to(device)
                     
-                    probs, _ = model.predict(x_batch) 
+                    probs, _ = model.predict(X_batch) 
                     preds = (probs >= 0.5).float()
                     
                     # Loss de validación
-                    logits, _ = model(x_batch)
+                    logits, _ = model(X_batch)
                     val_loss_sum += criterion(logits, y_batch).item()
                     val_batch_count += 1
                     
@@ -807,67 +746,48 @@ def train_template(train_loader, model, val_loader=None, epochs=50, pos_weight=1
         # Mostrar progreso cada 5 epochs
         if (epoch + 1) % 5 == 0:
             restart_info = f"Restarts: {ca_scheduler.restarts}"
-            print(f"Epoch {epoch+1:3d}/{epochs} | "
-                  f"Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f} | "
-                  f"Val F1: {val_f1:.4f} (P:{val_precision:.3f} R:{val_recall:.3f}) | "
-                  f"LR: {current_lr:.6f} | {restart_info}")
+
         
-        # Mostrar eventos de restart
-        if ca_scheduler.restart_epochs and ca_scheduler.restart_epochs[-1] == epoch + 1:
-            print(f"   🔄 WARM RESTART en epoch {epoch+1}: LR -> {current_lr:.6f}")
+
         
         # Mostrar cuando comienza SWA
-        if use_swa and epoch == swa_start:
-            print(f"   📊 SWA ACTIVADO en epoch {epoch+1}: promediando pesos")
+
         
     
     # Estadísticas finales
     stats = ca_scheduler.get_stats()
-    print(f"\n{'='*70}")
-    print("Estadísticas de Cosine Annealing:")
-    print(f"   Epochs completados: {stats['epoch']}")
-    print(f"   Mejor loss: {stats['best_loss']:.4f}")
-    print(f"   Warm restarts: {stats['restarts']}")
-    print(f"   Epochs de restart: {stats['restart_epochs']}")
-    print(f"   LR final: {stats['current_lr']:.6f}")
-    print(f"{'='*70}")
+
     
     # Si usamos SWA, actualizar batch normalization y usar el modelo promediado
     if use_swa and swa_model is not None:
-        print("\n📊 Finalizando SWA...")
         # Actualizar estadísticas de batch normalization
         from torch.optim.swa_utils import update_bn
         update_bn(train_loader, swa_model, device=device)
         
         # Evaluar modelo SWA vs mejor modelo
-        print("Evaluando modelo SWA...")
         swa_model.eval()
         swa_preds, swa_labels = [], []
         with torch.no_grad():
-            for x_batch, y_batch in val_loader:
-                x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-                probs, _ = swa_model.module.predict(x_batch)
+            for X_batch, y_batch in val_loader:
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                probs, _ = swa_model.module.predict(X_batch)
                 preds = (probs >= 0.5).float()
                 swa_preds.extend(preds.cpu().numpy().flatten())
                 swa_labels.extend(y_batch.cpu().numpy().flatten())
         
         swa_f1 = f1_score(swa_labels, swa_preds, zero_division=0)
-        print(f"   F1 con SWA: {swa_f1:.4f}")
-        print(f"   Mejor F1 sin SWA: {best_val_f1:.4f}")
+
         
         # Usar el mejor entre SWA y el mejor modelo guardado
         if swa_f1 > best_val_f1:
-            print(f"✅ Usando modelo SWA (mejor F1: {swa_f1:.4f})")
             model = swa_model.module
             best_val_f1 = swa_f1
         elif best_model_state is not None:
-            print(f"✅ Usando mejor modelo guardado (mejor F1: {best_val_f1:.4f})")
             model.load_state_dict(best_model_state)
             model = model.to(device)
     elif best_model_state is not None:
         model.load_state_dict(best_model_state)
         model = model.to(device)
-        print(f"✅ Restaurado mejor modelo con Val F1: {best_val_f1:.4f}")
     
     return model, ca_scheduler
 
@@ -885,10 +805,10 @@ def encontrar_umbral_optimo(model, val_loader, device=None):
     all_labels = []
     
     with torch.no_grad():
-        for x_batch, y_batch in val_loader:
-            x_batch = x_batch.to(device)
+        for X_batch, y_batch in val_loader:
+            X_batch = X_batch.to(device)
             
-            probs, _ = model(x_batch)
+            probs, _ = model(X_batch)
             all_probs.extend(probs.cpu().numpy().flatten())
             all_labels.extend(y_batch.numpy().flatten())
     
@@ -898,7 +818,6 @@ def encontrar_umbral_optimo(model, val_loader, device=None):
     best_f1 = 0
     best_threshold = 0.5
     
-    print("\n--- Búsqueda de Umbral Óptimo ---")
     for threshold in np.arange(0.05, 0.95, 0.05):
         preds = (all_probs >= threshold).astype(int)
         f1 = f1_score(all_labels, preds, zero_division=0)
@@ -908,9 +827,7 @@ def encontrar_umbral_optimo(model, val_loader, device=None):
         if f1 > best_f1:
             best_f1 = f1
             best_threshold = threshold
-            print(f"Threshold: {threshold:.2f} -> F1: {f1:.4f}, Recall: {recall:.4f}, Precision: {precision:.4f} *")
     
-    print(f"\nMejor umbral: {best_threshold:.2f} con F1: {best_f1:.4f}")
     return best_threshold
 
 
@@ -928,16 +845,15 @@ def encontrar_umbral_por_precision(model, val_loader, target_precision=0.70, dev
     all_labels = []
 
     with torch.no_grad():
-        for x_batch, y_batch in val_loader:
-            x_batch = x_batch.to(device)
-            probs, _ = model.predict(x_batch)
+        for X_batch, y_batch in val_loader:
+            X_batch = X_batch.to(device)
+            probs, _ = model.predict(X_batch)
             all_probs.extend(probs.cpu().numpy().flatten())
             all_labels.extend(y_batch.numpy().flatten())
 
     all_probs = np.array(all_probs)
     all_labels = np.array(all_labels)
 
-    print("\n--- Búsqueda de Umbral por Precisión ---")
     best_prec = 0.0
     best_thr = 0.5
     best_metrics = (0.0, 0.0)  # (recall, f1)
@@ -957,10 +873,8 @@ def encontrar_umbral_por_precision(model, val_loader, target_precision=0.70, dev
 
         # Primer umbral que alcanza la precisión objetivo
         if prec >= target_precision:
-            print(f"Objetivo alcanzado: Thr {threshold:.2f} -> Precision {prec:.4f}, Recall {rec:.4f}, F1 {f1:.4f} *")
             return threshold
 
-    print(f"No se alcanzó precisión {target_precision:.2f}. Mejor: Thr {best_thr:.2f} -> Precision {best_prec:.4f}, Recall {best_metrics[0]:.4f}, F1 {best_metrics[1]:.4f}")
     return best_thr
 
 
@@ -977,15 +891,13 @@ def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
     all_labels = []
     all_probs = []
     
-    print("\n" + "="*70)
-    print("--- EVALUACIÓN DEL MODELO ---")
-    print("="*70)
+
     
     with torch.no_grad():
-        for x_batch, y_batch in test_loader:
-            x_batch = x_batch.to(device)
+        for X_batch, y_batch in test_loader:
+            X_batch = X_batch.to(device)
             
-            probs, _ = model.predict(x_batch)  # Usar predict() que aplica sigmoid
+            probs, _ = model.predict(X_batch)  # Usar predict() que aplica sigmoid
             preds = (probs >= threshold).float()
             
             all_probs.extend(probs.cpu().numpy().flatten())
@@ -1000,35 +912,7 @@ def evaluar_modelo(model, test_loader, threshold=0.5, device=None):
     precision = precision_score(all_labels, all_preds, zero_division=0)
     recall = recall_score(all_labels, all_preds, zero_division=0)
     f1 = f1_score(all_labels, all_preds, zero_division=0)
-    conf_matrix = confusion_matrix(all_labels, all_preds)
-    
-    print(f"\n1. MÉTRICAS DE CLASIFICACIÓN (threshold={threshold:.2f}):")
-    print("-" * 70)
-    print(f"   Accuracy:  {accuracy:.4f}")
-    print(f"   Precision: {precision:.4f}")
-    print(f"   Recall:    {recall:.4f}")
-    print(f"   F1-Score:  {f1:.4f}")
-    
-    print(f"\n2. MATRIZ DE CONFUSIÓN:")
-    print("-" * 70)
-    print(f"   {'':>15} Predicho 0  Predicho 1")
-    print(f"   {'Real 0':>15} {conf_matrix[0][0]:>10} {conf_matrix[0][1]:>10}")
-    if len(conf_matrix) > 1:
-        print(f"   {'Real 1':>15} {conf_matrix[1][0]:>10} {conf_matrix[1][1]:>10}")
-    
-    print(f"\n3. REPORTE DETALLADO:")
-    print("-" * 70)
-    print(classification_report(all_labels, all_preds, 
-                                target_names=['Normal', 'Anomalía'],
-                                zero_division=0))
-    
-    print(f"\n4. DISTRIBUCIÓN:")
-    print("-" * 70)
-    print(f"   Total muestras: {len(all_labels)}")
-    print(f"   Anomalías reales: {int(all_labels.sum())} ({all_labels.mean()*100:.2f}%)")
-    print(f"   Anomalías predichas: {int(all_preds.sum())} ({all_preds.mean()*100:.2f}%)")
-    
-    print("\n" + "="*70)
+    conf_matrix = confusion_matrix(all_labels, all_preds)    
     
     return {
         'accuracy': accuracy,
@@ -1048,10 +932,7 @@ def demo_prediccion_online(model, scaler, test_df, threshold=0.5, device=None):
     """Demuestra el uso del predictor online."""
     if device is None:
         device = DEVICE
-    
-    print("\n" + "="*70)
-    print("--- DEMO: PREDICCIÓN ONLINE (dato a dato) ---")
-    print("="*70)
+
     
     predictor = OnlinePredictor(model, scaler, max_history=120, device=device)
     
@@ -1073,16 +954,6 @@ def demo_prediccion_online(model, scaler, test_df, threshold=0.5, device=None):
         
         if result['is_anomaly']:
             anomalias_detectadas += 1
-            if anomalias_detectadas <= 5:
-                print(f"\n⚠️  ANOMALÍA DETECTADA en muestra {i}")
-                print(f"   Probabilidad: {result['probability']:.4f}")
-                print(f"   Confianza: {result['confidence']:.2%}")
-                print(f"   Muestras en memoria: {result['samples_in_memory']}")
-    
-    print(f"\n📊 Resumen de predicción online:")
-    print(f"   Muestras procesadas: {len(resultados)}")
-    print(f"   Anomalías detectadas: {anomalias_detectadas}")
-    print(f"   Ratio: {anomalias_detectadas/len(resultados)*100:.2f}%")
     
     return predictor, resultados
 
@@ -1120,10 +991,7 @@ def exportar_modelo_portable(model, scaler, threshold, input_size, seq_len, save
     }
     
     torch.save(checkpoint, save_path)
-    print(f"\n✅ Modelo exportado exitosamente a: {save_path}")
-    print(f"   Input size: {input_size}")
-    print(f"   Seq length: {seq_len}")
-    print(f"   Threshold: {threshold:.4f}")
+
     return checkpoint
 
 
@@ -1141,8 +1009,7 @@ def importar_modelo_portable(checkpoint_path, device=None):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    print(f"\n📦 Cargando modelo desde: {checkpoint_path}")
-    print(f"   Dispositivo: {device}")
+
     
     # Cargar checkpoint
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
@@ -1177,12 +1044,7 @@ def importar_modelo_portable(checkpoint_path, device=None):
     threshold = checkpoint['threshold']
     seq_len = checkpoint.get('seq_len', 60)
     
-    print(f"✅ Modelo cargado exitosamente")
-    print(f"   Input size: {config['input_size']}")
-    print(f"   Hidden size: {config['hidden_size']}")
-    print(f"   Num layers: {config['num_layers']}")
-    print(f"   Seq length: {seq_len}")
-    print(f"   Threshold: {threshold:.4f}")
+
     
     return {
         'model': model,
@@ -1198,9 +1060,8 @@ if __name__ == "__main__":
     archivo_pickle = "datos_procesados.pkl"
     
     if not os.path.exists(archivo_pickle):
-        print(f"Error: No se encuentra {archivo_pickle}. Ejecuta main.py primero.")
+        pass
     else:
-        print(f"Cargando datos desde {archivo_pickle}...")
         with open(archivo_pickle, "rb") as f:
             datos_lista = pickle.load(f)
         
@@ -1211,16 +1072,14 @@ if __name__ == "__main__":
         num_anomalies = analizar_datos(df)
 
         # División temporal
-        train_idx = int(len(df) * 0.80)
-        val_idx = int(len(df) * 0.95)
+        train_idx = int(len(df) * 0.70)
+        val_idx = int(len(df) * 0.85)
         
         train_df = df.iloc[:train_idx].copy()
         val_df = df.iloc[train_idx:val_idx].copy()
         test_df = df.iloc[val_idx:].copy()
         
-        print(f"\nDatos de Entrenamiento: {len(train_df)} muestras")
-        print(f"Datos de Validación: {len(val_df)} muestras")
-        print(f"Datos de Test: {len(test_df)} muestras")
+
 
         SEQ_LEN = 60
         
@@ -1231,20 +1090,15 @@ if __name__ == "__main__":
         val_dataset = VoltageDropDataset(val_df, seq_len=SEQ_LEN, scaler=scaler)
         test_dataset = VoltageDropDataset(test_df, seq_len=SEQ_LEN, scaler=scaler)
         
-        print(f"\nFeatures de entrada: {input_size}")
-        print(f"Longitud de secuencia: {SEQ_LEN}")
-        print(f"Ratio de anomalías en train: {train_dataset.anomaly_ratio:.4%}")
-        print(f"Anomalías en train: {train_dataset.num_anomalies}")
+
         
         pos_weight_base = train_dataset.get_class_weights()
         pos_weight = pos_weight_base * 0.75  # Aumentar penalidad para falsos negativos (maximizar recall)
-        print(f"Peso para clase positiva (base): {pos_weight_base:.2f}")
-        print(f"Peso para clase positiva (ajustado x0.75 para recall): {pos_weight:.2f}")
+
         
         loader_kwargs = {'pin_memory': torch.cuda.is_available(), 'num_workers': 0, 'persistent_workers': False} if torch.cuda.is_available() else {}
         
         if train_dataset.num_anomalies < 200:
-            print("Aplicando Data Augmentation...")
             augmented_dataset = aumentar_datos_con_ruido(train_dataset, factor=6)  # Reducido a 6 para balance natural
             train_loader = DataLoader(augmented_dataset, batch_size=32, shuffle=True, **loader_kwargs)  # shuffle=True, batch_size=32
         else:
@@ -1252,10 +1106,6 @@ if __name__ == "__main__":
         
         val_loader = DataLoader(val_dataset, batch_size=64, shuffle=False, **loader_kwargs)
         test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, **loader_kwargs)
-
-        print("\n" + "="*70)
-        print(f"Entrenando Modelo con Cosine Annealing en {DEVICE}...")
-        print("="*70)
         
         model = VoltageAnomalyModelStateful(
             input_size=input_size,
@@ -1273,26 +1123,14 @@ if __name__ == "__main__":
         target_precision = 0.60
         optimal_threshold = encontrar_umbral_por_precision(model, val_loader, target_precision=target_precision, device=DEVICE)
         
-        print("\nEvaluando modelo con datos de test (modo batch)...")
         metricas = evaluar_modelo(model, test_loader, threshold=optimal_threshold, device=DEVICE)
         
         predictor, resultados = demo_prediccion_online(model, scaler, test_df, threshold=optimal_threshold, device=DEVICE)
         
         # Guardar modelo de manera portable
-        print("\nGuardando modelo...")
         exportar_modelo_portable(
             model, scaler, optimal_threshold, input_size, SEQ_LEN,
             save_path='modelo_anomalias.pth',
             ca_stats=ca_scheduler.get_stats()
         )
         
-        print(f"\n{'='*70}")
-        print("RESUMEN FINAL")
-        print(f"{'='*70}")
-        print(f"  Dispositivo usado: {DEVICE}")
-        print(f"  Umbral óptimo (maximizando recall, precisión≥{target_precision:.2f}): {optimal_threshold:.2f}")
-        print(f"  F1-Score: {metricas['f1_score']:.4f}")
-        print(f"  Recall: {metricas['recall']:.4f}")
-        print(f"  Precision: {metricas['precision']:.4f}")
-        print(f"  Warm Restarts: {ca_scheduler.restarts}")
-        print(f"\nModelo guardado en: modelo_anomalias.pth")

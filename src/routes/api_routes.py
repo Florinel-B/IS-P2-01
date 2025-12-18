@@ -104,10 +104,10 @@ def init_routes(sistema, socketio):
         usuario = sistema.obtener_usuario(user_id)
         if not usuario:
             return jsonify({'error': 'Usuario no encontrado'}), 404
-        
-        data = request.json
-        descripcion = data.get('descripcion', '').strip()
-        severidad = data.get('severidad', 'ERROR')
+
+        data = request.get_json(silent=True) or {}
+        descripcion = str(data.get('descripcion', '')).strip()
+        severidad = str(data.get('severidad', 'ERROR'))
         
         if not descripcion:
             return jsonify({'error': 'Descripción vacía'}), 400
@@ -169,6 +169,8 @@ def init_routes(sistema, socketio):
         
         # Precarga: llenar el buffer con los primeros 60 datos sin emitir eventos
         seq_len = predictor.seq_len  # 60 por defecto
+        print(f"[SIM] Precargando primeros {seq_len} datos...")
+        
         for i in range(min(seq_len, len(df))):
             row = df.iloc[i]
             voltages = {
@@ -181,16 +183,25 @@ def init_routes(sistema, socketio):
             # Precarga sin emitir (solo llena el buffer)
             predictor.predict_single(voltages, status_val, row['tiempo'])
         
+        print(f"[SIM] ✓ Buffer inicializado con {len(predictor.buffer)} datos")
+        
         # Notificar que la precarga está lista
         socketio.emit('precarga_completa', {'buffer_size': len(predictor.buffer)}, room=user_id)
         
         prev_time = None
 
+        # Demo: limitar puntos emitidos si el dataset es muy grande (evita saturar el navegador)
+        max_points = int(state.get('max_points', 2000) or 2000)
+
         for idx, row in df.iterrows():
             # Saltar los primeros seq_len que ya fueron precargados
             if idx < seq_len:
                 continue
+            
             if not state.get('running'):
+                break
+
+            if max_points <= 0:
                 break
 
             if prev_time is not None:
@@ -241,14 +252,31 @@ def init_routes(sistema, socketio):
                     'tiempo': row['tiempo'].isoformat()
                 }, room=user_id)
 
+            # Mapeo solicitado para la gráfica: 1: Normal, 0: Anomalía, 2: Cuelgue
+            # LSTM: 0 (Normal) -> 1, 1 (Anomalía) -> 0
+            pred_lstm_mapped = 1 if pred.get('lstm_prediccion') == 0 else 0
+            
+            # RF (Ensemble): 0 (Normal) -> 1, 1 (Anomalía) -> 0, 2 (Cuelgue) -> 2
+            rf_raw = pred.get('prediccion', 0)
+            if rf_raw == 0:
+                pred_rf_mapped = 1
+            elif rf_raw == 1:
+                pred_rf_mapped = 0
+            else:
+                pred_rf_mapped = 2
+
             payload = {
                 'tiempo': row['tiempo'].isoformat(),
                 'status': status_val,
                 **voltages,
                 'prediccion': pred,
+                'pred_lstm': pred_lstm_mapped,
+                'pred_rf': pred_rf_mapped,
                 'incidencia': incidencia_tipo
             }
             socketio.emit('dato_voltaje', payload, room=user_id)
+
+            max_points -= 1
 
         state['running'] = False
 
@@ -259,6 +287,7 @@ def init_routes(sistema, socketio):
         device_id = data.get('id', 7)
         speed = float(data.get('speed', 1))
         start_offset = int(data.get('start_offset', 0))  # Ej: 100 para saltarse primeras 100 filas
+        max_points = int(data.get('max_points', 2000) or 2000)
 
         if not user_id:
             return jsonify({'error': 'user_id requerido'}), 400
@@ -271,7 +300,7 @@ def init_routes(sistema, socketio):
         if user_id in simulation_states:
             simulation_states[user_id]['running'] = False
 
-        simulation_states[user_id] = {'running': True, 'device_id': device_id, 'speed': speed}
+        simulation_states[user_id] = {'running': True, 'device_id': device_id, 'speed': speed, 'max_points': max_points}
         socketio.start_background_task(_run_simulation, user_id, device_id, speed, start_offset)
 
         return jsonify({'success': True, 'user_id': user_id, 'id': device_id, 'speed': speed})

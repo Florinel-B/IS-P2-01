@@ -165,7 +165,7 @@ def train_ensemble(
 
     # Evaluación en test
     print("\n6️⃣  Evaluación en test set...")
-    predictions_test = detector.predict(df_test, use_lstm_only=False)
+    predictions_test = detector.predict(df_test)
 
     y_pred = predictions_test["predictions"]
     y_proba = predictions_test["probabilities"]

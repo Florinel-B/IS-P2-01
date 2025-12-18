@@ -173,6 +173,14 @@
             <button onclick="actualizarGrafica()" style="margin-top: 15px;">🔄 Actualizar Datos</button>
         </div>
 
+        <div class="panel full">
+            <h2>📉 Comparativa: Estado Real vs Predicciones (t+1)</h2>
+            <div style="font-size: 12px; margin-bottom: 10px; color: #666;">
+                <b>Real:</b> 1=Normal, 0=Anomalía, 2=Bloqueo | <b>Predicho:</b> 1=Normal, 0=Anomalía, 2=Cuelgue
+            </div>
+            <canvas id="stateChart" style="max-height: 200px;"></canvas>
+        </div>
+
         <div class="panel">
             <h2>🔔 Notificaciones de Errores</h2>
             <div id="notificaciones" class="notificaciones"></div>
@@ -236,6 +244,73 @@
             }
         });
 
+        // Configurar gráfica de estados
+        const ctxState = document.getElementById('stateChart').getContext('2d');
+        const stateChart = new Chart(ctxState, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    { 
+                        label: 'Estado Real', 
+                        data: [], 
+                        borderColor: '#2ecc71', 
+                        backgroundColor: 'rgba(46, 204, 113, 0.1)',
+                        pointRadius: 0,
+                        tension: 0.1,
+                        borderWidth: 3
+                    },
+                    { 
+                        label: 'Predicción LSTM (t-1)', 
+                        data: [], 
+                        borderColor: '#3498db', 
+                        backgroundColor: 'transparent',
+                        pointRadius: 0,
+                        tension: 0.1,
+                        borderWidth: 2,
+                        borderDash: [5, 5]
+                    },
+                    { 
+                        label: 'Predicción Árbol (t-1)', 
+                        data: [], 
+                        borderColor: '#e67e22', 
+                        backgroundColor: 'transparent',
+                        pointRadius: 0,
+                        tension: 0.1,
+                        borderWidth: 2
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: true,
+                scales: {
+                    y: { 
+                        min: -0.5, 
+                        max: 2.5,
+                        ticks: {
+                            stepSize: 1,
+                            callback: function(value) {
+                                if (value === 1) return 'Normal';
+                                if (value === 0) return 'Anomalía';
+                                if (value === 2) return 'Bloqueo/Cuelgue';
+                                return '';
+                            }
+                        }
+                    },
+                    x: { ticks: { maxTicksLimit: 10 } }
+                },
+                plugins: {
+                    legend: { position: 'top' }
+                }
+            }
+        });
+
+        let ultimaPrediccionLSTM = null;
+        let ultimaPrediccionRF = null;
+        let lastVoltages = null;
+        let lastTime = null;
+
         // Cargar datos iniciales
         cargarVoltajesCsv();
         cargarNotificaciones();
@@ -255,6 +330,42 @@
                 chart.data.datasets[2].data = data.R1_b;
                 chart.data.datasets[3].data = data.R2_b;
                 chart.update();
+
+                // Inicializar gráfica de estados calculando el "estado real"
+                // Codificación: 1 = Normal, 0 = Anomalía (>500mV), 2 = Bloqueo (status == 0)
+                stateChart.data.labels = [...data.labels];
+                const estadoArray = [];
+                for (let i = 0; i < data.labels.length; i++) {
+                    // Por defecto asumimos Normal (1)
+                    let estado = 1;
+
+                    // Si status == 0 -> bloqueo
+                    if ((data.status && data.status[i]) === 0) {
+                        estado = 2;
+                    } else if (i > 0) {
+                        // Comprobar saltos de voltaje respecto al punto anterior
+                        const prevR1 = Number(data.R1_a[i - 1] || 0);
+                        const prevR2 = Number(data.R2_a[i - 1] || 0);
+                        const prevR1b = Number(data.R1_b[i - 1] || 0);
+                        const prevR2b = Number(data.R2_b[i - 1] || 0);
+
+                        const dR1 = Math.abs(Number(data.R1_a[i] || 0) - prevR1);
+                        const dR2 = Math.abs(Number(data.R2_a[i] || 0) - prevR2);
+                        const dR1b = Math.abs(Number(data.R1_b[i] || 0) - prevR1b);
+                        const dR2b = Math.abs(Number(data.R2_b[i] || 0) - prevR2b);
+
+                        if (dR1 > 500 || dR2 > 500 || dR1b > 500 || dR2b > 500) {
+                            estado = 0;
+                        }
+                    }
+                    estadoArray.push(estado);
+                }
+
+                stateChart.data.datasets[0].data = estadoArray;
+                // Las predicciones iniciales no las tenemos, ponemos null
+                stateChart.data.datasets[1].data = new Array(data.labels.length).fill(null);
+                stateChart.data.datasets[2].data = new Array(data.labels.length).fill(null);
+                stateChart.update();
             } catch (error) {
                 console.error('Error al cargar voltajes:', error);
             }
@@ -315,9 +426,57 @@
             }
             chart.update('none');
 
+            // Calcular Estado Real (codificación: 1 Normal, 0 Anomalía, 2 Bloqueo)
+            let estadoReal = 1; // Normal por defecto
+            
+            // 1. Anomalía: Salto > 500mV en cualquier canal
+            if (lastVoltages) {
+                const dR1a = Math.abs(payload.R1_a - lastVoltages.R1_a);
+                const dR2a = Math.abs(payload.R2_a - lastVoltages.R2_a);
+                const dR1b = Math.abs(payload.R1_b - lastVoltages.R1_b);
+                const dR2b = Math.abs(payload.R2_b - lastVoltages.R2_b);
+                
+                if (dR1a > 500 || dR2a > 500 || dR1b > 500 || dR2b > 500) {
+                    estadoReal = 0;
+                }
+            }
+
+            // 2. Bloqueo: Si el status recibido es 0
+            if (payload.status === 0) {
+                estadoReal = 2;
+            }
+            
+            // Guardar valores actuales para la siguiente comparación
+            lastVoltages = { R1_a: payload.R1_a, R2_a: payload.R2_a, R1_b: payload.R1_b, R2_b: payload.R2_b };
+            lastTime = new Date(payload.tiempo);
+
+            // Actualizar gráfica de estados
+            stateChart.data.labels.push(label);
+            stateChart.data.datasets[0].data.push(estadoReal);
+            stateChart.data.datasets[1].data.push(ultimaPrediccionLSTM);
+            stateChart.data.datasets[2].data.push(ultimaPrediccionRF);
+
+            if (stateChart.data.labels.length > maxPoints) {
+                stateChart.data.labels.shift();
+                stateChart.data.datasets.forEach(ds => ds.data.shift());
+            }
+            stateChart.update('none');
+
+            // Guardar predicciones mapeadas desde la API para el siguiente paso
+            if (payload.pred_lstm !== undefined) ultimaPrediccionLSTM = payload.pred_lstm;
+            if (payload.pred_rf !== undefined) ultimaPrediccionRF = payload.pred_rf;
+
+            // Mostrar info (si viene el objeto completo)
             if (payload.prediccion) {
                 const p = payload.prediccion;
-                document.getElementById('predInfo').textContent = `Predicción: ${p.clase} (confianza ${(p.confianza*100).toFixed(1)}%)`;
+                const predInfo = document.getElementById('predInfo');
+                const predClase = p.clase || p.prediccion || 0;
+
+                predInfo.textContent = `Predicción: ${predClase} (confianza ${(p.confianza*100).toFixed(1)}%)`;
+
+                if (predClase === 0) predInfo.style.color = '#27ae60';
+                else if (predClase === 1) predInfo.style.color = '#e67e22';
+                else predInfo.style.color = '#e74c3c';
             }
         });
 
@@ -337,6 +496,10 @@
         async function iniciarSimulacion() {
             const speed = Number(document.getElementById('speedSelect').value || 1);
             const startOffset = Number(document.getElementById('offsetInput').value || 0);
+            ultimaPrediccionLSTM = null; // Resetear predicciones al iniciar
+            ultimaPrediccionRF = null;
+            lastVoltages = null;     // Resetear historial para cálculo de diff
+            lastTime = null;
             try {
                 await fetch('/api/simulacion/iniciar', {
                     method: 'POST',

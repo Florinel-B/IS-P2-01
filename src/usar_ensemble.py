@@ -18,12 +18,11 @@ def predict_multiclass(
     output_csv: str = "predicciones_ensemble.csv"
 ) -> Dict:
     """
-    Realiza predicción multiclase sobre los datos.
+    Realiza predicción multiclase sobre los datos usando el modelo completo.
 
     Args:
         data_path: Path a datos procesados (pickle)
         lstm_model_path: Path al modelo LSTM
-        use_ensemble: Si True, usa RF; si False, usa heurística
         output_csv: Archivo de salida CSV
 
     Returns:
@@ -47,15 +46,9 @@ def predict_multiclass(
     print("\n2️⃣  Inicializando detector ensemble...")
     detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
 
-    # Cargar Random Forest si existe
-    if use_ensemble:
-        if not detector.load_random_forest():
-            print("   ⚠️  RF no encontrado, usando heurística")
-            use_ensemble = False
-
-    # Realizar predicciones
+    # Realizar predicciones con el modelo completo
     print("\n3️⃣  Realizando predicciones...")
-    results = detector.predict(df, use_lstm_only=not use_ensemble)
+    results = detector.predict(df)
 
     predictions = results["predictions"]
     probabilities = results["probabilities"]
@@ -146,10 +139,7 @@ def predict_live(
     """
     detector = EnsembleAnomalyDetector(lstm_model_path=lstm_model_path)
 
-    if use_ensemble:
-        detector.load_random_forest()
-
-    results = detector.predict(new_data, use_lstm_only=not use_ensemble)
+    results = detector.predict(new_data)
 
     output = {
         "predicciones": detector.get_classification_names(results["predictions"]),

@@ -26,13 +26,6 @@ class RealtimePredictor:
         """
         self.detector = EnsembleAnomalyDetector(lstm_model_path)
         
-        # Intentar cargar RF
-        if self.detector.load_random_forest():
-            self.use_ensemble = True
-        else:
-            self.use_ensemble = False
-            print("⚠️  RF no encontrado, usando predicción LSTM + heurística")
-        
         # Buffer para secuencias (necesario para LSTM)
         self.seq_len = self.detector.seq_len
         self.buffer = []
@@ -41,7 +34,7 @@ class RealtimePredictor:
         print(f"✓ Predictor inicializado")
         print(f"   - LSTM threshold: {self.detector.lstm_threshold}")
         print(f"   - Sequence length: {self.seq_len}")
-        print(f"   - Ensemble: {self.use_ensemble}")
+        print(f"   - Modelo completo (RF + LSTM): ✓")
     
     def predict_single(
         self,
@@ -51,6 +44,7 @@ class RealtimePredictor:
     ) -> Dict:
         """
         Predice para un único elemento/timestamp.
+        SIEMPRE usa el modelo, rellenando con padding si buffer < seq_len.
         
         Args:
             voltage_data: Dict con las medidas de voltaje
@@ -76,53 +70,29 @@ class RealtimePredictor:
         if len(self.buffer) > self.seq_len:
             self.buffer.pop(0)
         
-        # Si tenemos al menos 10 datos, hacer predicción (en lugar de esperar a 60)
-        min_buffer = min(10, self.seq_len)
-        if len(self.buffer) < min_buffer:
-            return {
-                "estado": "procesando",
-                "buffer_size": len(self.buffer),
-                "required_size": self.seq_len,
-                "prediccion": None,
-                "clase": None,
-                "confianza": 0.0
-            }
+        # SIEMPRE predecir: si buffer < seq_len, rellenar con el primer elemento (padding)
+        df_buffer = pd.DataFrame(self.buffer).copy()
         
-        # Tenemos datos suficientes, hacer predicción
-        df_buffer = pd.DataFrame(self.buffer)
+        # Rellenar con padding si es necesario
+        if len(df_buffer) < self.seq_len:
+            first_row = df_buffer.iloc[0].to_dict() if len(df_buffer) > 0 else {col: 0 for col in ["voltageReceiver1", "voltageReceiver2", "status"]}
+            padding_rows = [first_row] * (self.seq_len - len(df_buffer))
+            df_padding = pd.DataFrame(padding_rows)
+            df_buffer = pd.concat([df_padding, df_buffer], ignore_index=True)
 
-        # Si el buffer es pequeño (<20 puntos), usar predicción heurística simple
-        if len(df_buffer) < 20:
-            # Heurística simple: detectar cambios de voltaje
-            lstm_prob = 0.0
-            hang_label = 0
-            
-            if len(df_buffer) > 1:
-                # Detectar cambio voltaje entre último y penúltimo
-                prev_voltages = df_buffer.iloc[-2][['R1_a', 'R2_a', 'R1_b', 'R2_b']].values
-                curr_voltages = df_buffer.iloc[-1][['R1_a', 'R2_a', 'R1_b', 'R2_b']].values
-                voltage_diffs = np.abs(curr_voltages - prev_voltages)
-                if np.any(voltage_diffs > 500):
-                    lstm_prob = 0.8  # Alta probabilidad de anomalía
-            
-            prediction = 1 if lstm_prob > 0.5 else 0
-            probs = [1.0 - lstm_prob, lstm_prob, 0.0]
-            confianza = max(probs)
-        else:
-            # Buffer suficiente (>=20), usar modelo completo
-            result = self.detector.predict(
-                df_buffer,
-                use_lstm_only=not self.use_ensemble
-            )
+        result = self.detector.predict(df_buffer)
 
-            idx = len(df_buffer) - 1
-            prediction = int(result["predictions"][idx])
-            probs_row = result["probabilities"][idx]
-            probs = probs_row.tolist() if hasattr(probs_row, "tolist") else list(probs_row)
-            hang_label = int(result["hang_labels"][idx]) if len(result["hang_labels"]) > idx else 0
-            lstm_prob = float(result["lstm_probs"][idx]) if len(result["lstm_probs"]) > idx else 0.0
-            lstm_pred = 1 if lstm_prob >= self.detector.lstm_threshold else 0
-            confianza = max(probs)
+        # Tomar la predicción del último elemento (el que acabamos de agregar)
+        idx = len(df_buffer) - 1
+        prediction = int(result["predictions"][idx])
+
+        probs_row = result["probabilities"][idx]
+        probs = probs_row.tolist() if hasattr(probs_row, "tolist") else list(probs_row)
+
+        hang_label = int(result["hang_labels"][idx]) if len(result["hang_labels"]) > idx else 0
+        lstm_prob = float(result["lstm_probs"][idx]) if len(result["lstm_probs"]) > idx else 0.0
+        lstm_pred = 1 if lstm_prob >= self.detector.lstm_threshold else 0
+        confianza = float(max(probs)) if len(probs) else 0.0
         
         # Mapear a nombres
         class_names = {
@@ -132,15 +102,14 @@ class RealtimePredictor:
         }
         
         return {
-            "estado": "completado",
             "prediccion": prediction,
             "clase": class_names.get(prediction, "Unknown"),
             "confianza": confianza,
             "prob_normal": probs[0],
             "prob_anomalia_voltaje": probs[1],
             "prob_cuelgue": probs[2],
-            "lstm_probabilidad": lstm_prob if len(df_buffer) >= 20 else lstm_prob,
-            "lstm_prediccion": lstm_pred if len(df_buffer) >= 20 else (1 if lstm_prob > 0.5 else 0),
+            "lstm_probabilidad": lstm_prob,
+            "lstm_prediccion": lstm_pred,
             "cuelgue_detectado": int(hang_label),
             "status": status,
             "buffer_size": len(self.buffer)
@@ -203,21 +172,21 @@ def predict_from_csv(
     print(f"\n3️⃣  Prediciendo elemento a elemento...")
     predictions = []
     
-    for idx, row in df.iterrows():
-        if (idx + 1) % 100 == 0:
-            print(f"   Procesados: {idx + 1}/{len(df)}")
+    for idx_int, (_, row) in enumerate(df.iterrows()):
+        if (idx_int + 1) % 100 == 0:
+            print(f"   Procesados: {idx_int + 1}/{len(df)}")
         
         # Extraer voltajes
         voltage_data = {col: row[col] for col in df.columns 
                        if "voltage" in col.lower()}
         status = int(row.get("status", 1))
-        tiempo = row.get("tiempo", f"record_{idx}")
+        tiempo = row.get("tiempo", f"record_{idx_int}")
         
         # Predecir
         tiempo_val = row.get("tiempo")
         pred = predictor.predict_single(voltage_data, status, tiempo_val)
         pred["tiempo"] = tiempo
-        pred["indice"] = idx
+        pred["indice"] = idx_int
         predictions.append(pred)
     
     # Crear DataFrame de resultados

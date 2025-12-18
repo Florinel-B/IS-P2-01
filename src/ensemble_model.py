@@ -44,12 +44,17 @@ class EnsembleAnomalyDetector:
         self.scaler = self.lstm_dict["scaler"]
         self.seq_len = self.lstm_dict.get("seq_len", 60)
 
-        # Random Forest (será cargado o entrenado)
-        self.rf_model = None
-        self.rf_scaler = None  # Para normalizar features del ensemble
+        # Random Forest (será cargado - requerido)
+        self.rf_model: RandomForestClassifier = None  # type: ignore
+        self.rf_scaler: StandardScaler = None  # type: ignore
 
         print(f"   ✓ LSTM threshold: {self.lstm_threshold:.2f}")
         print(f"   ✓ Sequence length: {self.seq_len}")
+        
+        # Intentar cargar RF (requerido para usar el modelo completo)
+        if not self.load_random_forest():
+            raise RuntimeError(f"❌ CRÍTICO: No se puede cargar el Random Forest desde {self.rf_model_path}. "
+                             f"Se requiere el modelo RF entrenado para usar solo el modelo completo (sin heurística).")
 
     def detect_hangs(self, df: pd.DataFrame, hang_duration_minutes: int = 2) -> np.ndarray:
         """
@@ -72,22 +77,22 @@ class EnsembleAnomalyDetector:
             df["tiempo"] = pd.date_range(end=pd.Timestamp.utcnow(), periods=len(df), freq="T")
 
         # Detectar periodos de cuelgue
-        current_hang_start_idx = None
-        current_hang_start_time = None
+        current_hang_start_idx: Optional[int] = None
+        current_hang_start_time: Optional[pd.Timestamp] = None
 
-        for i, row in df.iterrows():
+        for idx, (_, row) in enumerate(df.iterrows()):
             status = row["status"]
 
             if status != 1:  # Sistema no está "1" (normal)
                 if current_hang_start_idx is None:
-                    current_hang_start_idx = i
+                    current_hang_start_idx = idx
                     current_hang_start_time = row["tiempo"]
             else:
                 if current_hang_start_idx is not None:
                     duration = (row["tiempo"] - current_hang_start_time).total_seconds() / 60
                     if duration >= hang_duration_minutes:
-                        # Marcar los timestamps del cuelgue (entre current_hang_start_idx e i)
-                        for j in range(current_hang_start_idx, i):
+                        # Marcar los timestamps del cuelgue (entre current_hang_start_idx e idx)
+                        for j in range(current_hang_start_idx, idx):
                             if df.iloc[j]["status"] != 1:
                                 hang_labels[j] = 1
                     current_hang_start_idx = None
@@ -244,16 +249,14 @@ class EnsembleAnomalyDetector:
 
     def predict(
         self,
-        df: pd.DataFrame,
-        use_lstm_only: bool = False
+        df: pd.DataFrame
     ) -> Dict[str, np.ndarray]:
         """
-        Realiza predicción multiclase (0/1/2).
+        Realiza predicción multiclase (0/1/2) usando el modelo completo (LSTM + RF).
         Funciona incluso con DataFrames pequeños (< seq_len).
 
         Args:
             df: DataFrame con datos
-            use_lstm_only: Si True, solo usa LSTM (sin RF)
 
         Returns:
             Dict con:
@@ -283,31 +286,7 @@ class EnsembleAnomalyDetector:
             lstm_probs = lstm_probs_padded
             lstm_preds = lstm_preds_padded
 
-        # Si no hay RF, combinar heurísticamente
-        if use_lstm_only or self.rf_model is None:
-            print("   ⚠️  Usando lógica heurística (sin RF)")
-            predictions = np.zeros(len(df), dtype=int)
-
-            for i in range(len(df)):
-                if hang_labels[i] == 1:
-                    predictions[i] = 2  # Cuelgue
-                elif lstm_preds[i] == 1:
-                    predictions[i] = 1  # Anomalía voltaje
-                # else: 0 (normal, default)
-
-            probabilities = np.zeros((len(df), 3))
-            for i in range(len(df)):
-                probabilities[i, predictions[i]] = 1.0
-
-            return {
-                "predictions": predictions,
-                "probabilities": probabilities,
-                "lstm_probs": lstm_probs,
-                "hang_labels": hang_labels,
-                "method": "heuristic"
-            }
-
-        # Usar Random Forest
+        # Usar Random Forest (modelo completo - sin heurística)
         print("   ✓ Usando Random Forest Ensemble")
         X = self.create_ensemble_features(df, lstm_probs, hang_labels)
         X_scaled = self.rf_scaler.transform(X)
@@ -332,8 +311,7 @@ class EnsembleAnomalyDetector:
             "predictions": predictions,
             "probabilities": probabilities,
             "lstm_probs": lstm_probs,
-            "hang_labels": hang_labels,
-            "method": "random_forest"
+            "hang_labels": hang_labels
         }
 
     def get_classification_names(self, predictions: np.ndarray) -> List[str]:

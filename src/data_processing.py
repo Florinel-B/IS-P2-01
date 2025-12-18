@@ -1,3 +1,17 @@
+"""
+Módulo para cargar, procesar y leer datasets de voltaje.
+
+Funciones principales:
+1. cargar_y_agrupar_dataset(ruta_csv):
+   - Lee un CSV con datos de dispositivos y voltajes.
+   - Agrupa por tiempo y ID, calcula medias de medidas por canal.
+   - Devuelve un DataFrame ordenado por ID y tiempo.
+
+2. leer_datos_procesados(ruta_pkl):
+   - Carga datos previamente procesados desde un archivo pickle.
+   - Convierte timestamps y devuelve un DataFrame ordenado por tiempo.
+"""
+
 import pandas as pd
 import numpy as np
 import pickle

@@ -1,3 +1,17 @@
+"""
+Módulo para la detección de incidencias en datos de voltaje y entrenamiento de un 
+modelo predictivo.
+
+Funciones principales:
+1. detectar_incidencias(df):
+   - Marca incidencias por ausencia de datos (bloqueos > 2 min) o saltos anómalos
+     en las mediciones (≥ 3 desviaciones estándar).
+2. entrenar_modelo(df):
+   - Entrena un RandomForestClassifier usando las columnas de voltaje como features
+     y la columna 'incidencia' como etiqueta.
+   - Devuelve el modelo entrenado y la precisión sobre un conjunto de test.
+"""
+
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.model_selection import train_test_split

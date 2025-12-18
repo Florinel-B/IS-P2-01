@@ -1057,6 +1057,19 @@ def importar_modelo_portable(checkpoint_path, device=None):
 
 
 if __name__ == "__main__":
+    """
+        Script principal para entrenar, validar y evaluar un modelo LSTM
+        stateful de detección de anomalías en voltaje.
+
+        Flujo:
+        1. Carga y preprocesado de datos.
+        2. División en train/val/test y creación de datasets secuenciales.
+        3. Entrenamiento del modelo con early stopping y SWA.
+        4. Búsqueda de umbral óptimo priorizando recall.
+        5. Evaluación y predicción online.
+        6. Exportación del modelo portable con scaler y umbral.
+"""
+
     archivo_pickle = "datos_procesados.pkl"
     
     if not os.path.exists(archivo_pickle):

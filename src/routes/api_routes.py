@@ -1,3 +1,19 @@
+"""
+Rutas API para Flask con simulación y predicción en tiempo real.
+
+Incluye:
+- Gestión de usuarios, notificaciones y estadísticas.
+- Simulación de datos y emisión vía WebSocket.
+- Predicción de incidencias en tiempo real con RealtimePredictor.
+- Endpoints principales: 
+  /datos_grafica, /actualizar_grafica, /enviar_error, /notificaciones,
+  /usuarios, /estadisticas, /incidencias_criticas,
+  /simulacion/iniciar, /simulacion/detener, /voltajes_csv, /prediccion/realtime.
+
+Clasificación de incidencias:
+0 = Normal, 1 = Anomalía voltaje, 2 = Cuelgue, 3 = Alerta preventiva.
+"""
+
 from flask import Blueprint, request, jsonify
 import random
 import os

@@ -1,3 +1,13 @@
+"""
+Definición de la clase Usuario y la interfaz Observer.
+
+Incluye:
+- Observer (interfaz abstracta): requiere el método actualizar().
+- Usuario: representa a un usuario conectado, maneja notificaciones,
+  envía errores y mantiene datos de gráficas limitados a los últimos 20 puntos.
+- Métodos principales: actualizar(), agregar_dato_grafica(), enviar_error(), to_dict().
+"""
+
 from typing import Dict, Any, List
 from datetime import datetime
 from abc import ABC, abstractmethod

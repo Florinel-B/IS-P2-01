@@ -1,3 +1,12 @@
+"""
+Rutas web para la aplicación Flask.
+
+Incluye:
+- Dashboard principal ('/') que genera un user_id y crea un usuario en el sistema.
+- Dashboard legacy ('/dashboard_legacy') para compatibilidad con la versión antigua.
+- Ambas rutas renderizan templates HTML y registran el usuario en el sistema.
+"""
+
 from flask import Blueprint, render_template
 import secrets
 

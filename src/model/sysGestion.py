@@ -1,3 +1,14 @@
+"""
+Gestión de usuarios y registro de incidencias.
+
+Clase principal:
+- SistemaGestion:
+    - Crea, obtiene y desconecta usuarios.
+    - Mantiene un registro de incidencias (RegistroIncidencias).
+    - Suscribe automáticamente a los usuarios al registro y envía notificaciones de conexión.
+    - Permite listar todos los usuarios conectados en formato diccionario.
+""" 
+
 from typing import Dict, List, Any
 from model.usuario import Usuario
 from model.registro_incidencias import RegistroIncidencias

@@ -1,3 +1,19 @@
+"""
+Aplicación Flask con soporte WebSocket mediante Flask-SocketIO.
+
+Funciones principales:
+- create_app():
+    - Crea la aplicación Flask y configura la clave secreta.
+    - Inicializa SocketIO con CORS permitido.
+    - Instancia el sistema de gestión (SistemaGestion).
+    - Registra rutas web y API mediante Blueprints.
+    - Inicializa eventos de WebSocket.
+    - Devuelve la app y el objeto SocketIO.
+
+Ejecución directa:
+- Ejecuta la app en modo debug, escuchando en todas las interfaces (0.0.0.0) y puerto 5000.
+"""
+
 from flask import Flask
 from flask_socketio import SocketIO
 import secrets

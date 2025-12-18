@@ -1,3 +1,15 @@
+"""
+Registro y gestión de incidencias del sistema.
+
+Clase principal:
+- RegistroIncidencias:
+    - Mantiene lista de observadores (usuarios) y mensajes registrados.
+    - Notifica automáticamente a los usuarios y via WebSocket.
+    - Clasifica mensajes según tipo: INFO, WARNING, ERROR, CRITICAL.
+    - Detecta incidencias críticas automáticamente (múltiples errores o palabras clave).
+    - Proporciona estadísticas del sistema y número de incidencias críticas.
+"""
+
 from typing import List, Dict, Any
 from datetime import datetime
 from model.usuario import Usuario

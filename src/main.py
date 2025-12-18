@@ -35,6 +35,19 @@ def cargar_y_agrupar_dataset(ruta_csv: str):
 
 
 if __name__ == "__main__":
+    """
+    Script principal para el procesamiento de un dataset CSV, detección de incidencias
+    y entrenamiento de un modelo predictivo.
+
+    Flujo:
+    1. Carga y agrupación del CSV.
+    2. Relleno de valores faltantes.
+    3. Detección de incidencias.
+    4. Entrenamiento del modelo predictivo y reporte de precisión.
+    5. Guardado de CSV con incidencias detectadas.
+    6. Visualización de incidencias mediante gráfica.
+    7. Guardado y recuperación de datos procesados en formato pickle.
+    """
 
     # 1. Cargar CSV
     df = cargar_y_agrupar_dataset("Dataset-CV.csv")
